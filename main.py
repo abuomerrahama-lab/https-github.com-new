@@ -6,7 +6,10 @@ from fastapi.responses import HTMLResponse
 app = FastAPI()
 
 WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
-TARGET_ACCOUNTS = "1085415013613251,1203619500645957"
+
+# معرّفات الحسابات الإعلانية المحددة
+META_ACCOUNTS = "1085415013613251,1203619500645957"
+TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -74,21 +77,23 @@ def home():
         </div>
 
         <script>
-            const allowedAccounts = ["1085415013613251", "1203619500645957"];
+            const allowedMetaAccounts = ["1085415013613251", "1203619500645957"];
+            const allowedTiktokAccounts = ["7477300225556824081", "7438927058295996417"];
 
             async function fetchAndAnalyze() {
-                document.getElementById('statusText').innerText = "جاري الاتصال بالـ API وتصفية الحملات النشطة...";
+                document.getElementById('statusText').innerText = "جاري الاتصال بالـ API وجلب حملات Meta و TikTok المحددة...";
                 try {
                     let res = await fetch('/api/data');
                     let rawData = await res.json();
                     
                     let allRows = [];
 
-                    // 1. معالجة Meta Ads (الحسابات المحددة والحملات النشطة فقط)
+                    // 1. معالجة Meta Ads
                     if (rawData.meta_ads && rawData.meta_ads.data) {
                         rawData.meta_ads.data.forEach(r => {
-                            let isAccountValid = allowedAccounts.includes(String(r.account_id));
-                            let isActive = !r.campaign_status || r.campaign_status.toUpperCase() === 'ACTIVE' || r.campaign_status.toUpperCase() === 'ENABLE';
+                            let isAccountValid = allowedMetaAccounts.includes(String(r.account_id));
+                            let status = (r.campaign_status || '').toUpperCase();
+                            let isActive = !r.campaign_status || status === 'ACTIVE' || status === 'ENABLE';
                             if (isAccountValid && isActive) {
                                 r.platform = 'Meta Ads';
                                 allRows.push(r);
@@ -96,21 +101,25 @@ def home():
                         });
                     }
 
-                    // 2. معالجة TikTok Ads (الحملات النشطة)
+                    // 2. معالجة TikTok Ads (مع التحقق من ID الحساب والحملات النشطة)
                     if (rawData.tiktok_ads && rawData.tiktok_ads.data) {
                         rawData.tiktok_ads.data.forEach(r => {
-                            let isActive = !r.campaign_status || r.campaign_status.toUpperCase() === 'ENABLE' || r.campaign_status.toUpperCase() === 'ACTIVE';
-                            if (isActive) {
+                            let isAccountValid = allowedTiktokAccounts.includes(String(r.account_id)) || allowedTiktokAccounts.includes(String(r.advertiser_id));
+                            let status = (r.campaign_status || r.operation_status || '').toUpperCase();
+                            let isActive = !status || status === 'ENABLE' || status === 'ACTIVE' || status === 'CAMPAIGN_STATUS_ENABLE';
+                            
+                            if ((isAccountValid || !r.account_id) && isActive) {
                                 r.platform = 'TikTok Ads';
                                 allRows.push(r);
                             }
                         });
                     }
 
-                    // 3. معالجة Google Ads (الحملات النشطة)
+                    // 3. معالجة Google Ads
                     if (rawData.google_ads && rawData.google_ads.data) {
                         rawData.google_ads.data.forEach(r => {
-                            let isActive = !r.campaign_status || r.campaign_status.toUpperCase() === 'ENABLED' || r.campaign_status.toUpperCase() === 'ACTIVE';
+                            let status = (r.campaign_status || '').toUpperCase();
+                            let isActive = !status || status === 'ENABLED' || status === 'ACTIVE';
                             if (isActive) {
                                 r.platform = 'Google Ads';
                                 allRows.push(r);
@@ -118,13 +127,13 @@ def home():
                         });
                     }
 
-                    // تاريخ الأمس
+                    // حساب تاريخ الأمس
                     let now = new Date();
                     let yesterday = new Date(now);
                     yesterday.setDate(now.getDate() - 1);
                     let yesterdayStr = yesterday.toISOString().split('T')[0];
 
-                    // تصفية نتائج أداء الأمس
+                    // تصفية أداء يوم أمس
                     let yRows = allRows.filter(r => r.date === yesterdayStr && (r.clicks > 0 || r.spend > 0));
                     let ySpend = 0, yClicks = 0, yConv = 0;
                     let yTbody = '';
@@ -192,7 +201,6 @@ def home():
                 return pct >= 0 ? `<span class="trend-up">📈 +${pct}%</span>` : `<span class="trend-down">📉 ${pct}%</span>`;
             }
 
-            // تشغيل التحديث تلقائياً عند فتح الصفحة
             fetchAndAnalyze();
         </script>
     </body>
@@ -202,10 +210,11 @@ def home():
 @app.get("/api/data")
 def get_data():
     if not WINDSOR_API_KEY:
-        return {"error": "WINDSOR_API_KEY غير معرف في Render Environment Variables"}
+        return {"error": "WINDSOR_API_KEY غير معرف"}
     
     results = {}
-    meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status,account_id&date_preset=last_30d&account_id={TARGET_ACCOUNTS}"
+    meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status,account_id&date_preset=last_30d&account_id={META_ACCOUNTS}"
+    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status,account_id,advertiser_id&date_preset=last_30d&account_id={TIKTOK_ACCOUNTS}"
     general_params = "&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status&date_preset=last_30d"
 
     try:
@@ -214,7 +223,7 @@ def get_data():
         results["meta_ads"] = {"error": str(e)}
 
     try:
-        results["tiktok_ads"] = requests.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{general_params}").json()
+        results["tiktok_ads"] = requests.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{tiktok_params}").json()
     except Exception as e:
         results["tiktok_ads"] = {"error": str(e)}
 
