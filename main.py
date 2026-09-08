@@ -64,7 +64,8 @@ def get_data():
         return {"error": "WINDSOR_API_KEY غير معرف في Render Environment Variables"}
     
     results = {}
-    params = "&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_30_days"
+    # تم تصحيح القيمة إلى last_30d
+    params = "&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_30d"
     
     # 1. Meta Ads
     try:
