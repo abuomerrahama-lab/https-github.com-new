@@ -1,13 +1,13 @@
 FROM node:18-slim
 
-# تثبيت متصفح Chromium وكل ملحقاته على السيرفر
+# تثبيت Chromium والحزم بالأسماء الصحيحة
 RUN apt-get update && apt-get install -y \
     chromium \
-    nss \
-    freetype \
-    harfbuzz \
+    libnss3 \
+    libfreetype6 \
+    libharfbuzz0b \
     ca-certificates \
-    ttf-freefont \
+    fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
