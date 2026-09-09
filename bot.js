@@ -9,7 +9,17 @@ const port = process.env.PORT || 3000;
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        executablePath: '/usr/bin/google-chrome-stable',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu'
+        ]
     }
 });
 
@@ -21,9 +31,8 @@ client.on('qr', (qr) => {
 client.on('ready', () => {
     console.log('تم الربط بواتساب بنجاح 100%!');
     
-    // إرسال التنبيه يومياً من الأحد للخميس الساعة 9:00 صباحاً
     cron.schedule('0 9 * * 0-4', () => {
-        const myNumber = '966556225251@c.us'; // ضع رقمك مع رمز الدولة بدون +
+        const myNumber = '966556225251@c.us'; // ضع رقمك هنا مع رمز الدولة بدون +
         const message = `🔔 *صباح الخير أبا بكر!*
 
 مباشرة لمراجعة أداء إعلاناتك اليوم عبر اللوحة:
