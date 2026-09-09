@@ -9,11 +9,10 @@ app = FastAPI()
 
 WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
 
-# معرّفات الحسابات الإعلانية المحددة
 META_ACCOUNTS = "1085415013613251,1203619500645957"
 TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
 
-# آلية الـ Keep-Alive لمنع وضع الخمول على Render
+# آلية Keep-Alive لمنع خمول السيرفر
 @app.on_event("startup")
 async def start_keep_alive():
     async def keep_alive():
@@ -26,7 +25,7 @@ async def start_keep_alive():
                         await client.get(render_url, timeout=10.0)
                 except Exception:
                     pass
-            await asyncio.sleep(300) # كل 5 دقائق
+            await asyncio.sleep(300)
 
     asyncio.create_task(keep_alive())
 
@@ -38,186 +37,426 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة تحليل الحملات الإعلانية</title>
+        <title>التقرير اليومي للإعلانات</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
-            body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; padding: 20px; direction: rtl; }
-            .container { max-width: 1000px; margin: 0 auto; }
-            .header { background: #1e293b; color: #fff; padding: 25px; border-radius: 12px; text-align: center; margin-bottom: 25px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-            .btn-refresh { background: #0284c7; color: white; border: none; padding: 12px 28px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 12px; transition: background 0.2s; }
-            .btn-refresh:hover { background: #0369a1; }
-            .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
-            .kpi-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-            .kpi-title { font-size: 13px; color: #64748b; margin-bottom: 6px; }
-            .kpi-value { font-size: 22px; font-weight: bold; color: #0f172a; }
-            table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-            th, td { padding: 14px; text-align: right; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
-            th { background: #f1f5f9; color: #475569; font-weight: 600; }
-            tr:hover { background: #f8fafc; }
-            .section-title { font-size: 18px; margin: 25px 0 12px; color: #1e293b; font-weight: bold; border-right: 4px solid #0284c7; padding-right: 10px; }
-            .status { font-size: 14px; color: #38bdf8; margin-top: 8px; }
-            .trend-up { color: #16a34a; font-weight: bold; }
-            .trend-down { color: #dc2626; font-weight: bold; }
+            :root {
+                --bg-main: #0d0f12;
+                --bg-card: #15181e;
+                --bg-card-hover: #1c2029;
+                --border-color: #262b36;
+                --text-main: #e2e8f0;
+                --text-muted: #8a94a6;
+                --accent-blue: #3b82f6;
+                --accent-pink: #ec4899;
+                --accent-green: #10b981;
+                --accent-gold: #f59e0b;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background-color: var(--bg-main);
+                color: var(--text-main);
+                margin: 0;
+                padding: 24px;
+                direction: rtl;
+            }
+            .container { max-width: 1200px; margin: 0 auto; }
+            
+            /* Header */
+            .header-bar {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 24px;
+            }
+            .header-title h1 { margin: 0; font-size: 22px; font-weight: 700; }
+            .header-title p { margin: 4px 0 0; font-size: 13px; color: var(--text-muted); }
+            
+            .actions-group { display: flex; gap: 8px; }
+            .btn {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                color: var(--text-main);
+                padding: 8px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 500;
+                transition: all 0.2s;
+            }
+            .btn:hover { background: var(--bg-card-hover); border-color: #3b82f6; }
+            .btn-accent { background: #d97706; color: #fff; border: none; }
+            .btn-accent:hover { background: #b45309; }
+
+            /* Top KPI Cards */
+            .kpi-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+                gap: 12px;
+                margin-bottom: 24px;
+            }
+            .kpi-card {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 16px;
+                text-align: center;
+                position: relative;
+            }
+            .kpi-card.highlight { border-color: var(--accent-gold); }
+            .kpi-card .label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+            .kpi-card .val { font-size: 22px; font-weight: 700; color: #fff; }
+            .kpi-card .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+            /* Chart Card */
+            .chart-card {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 24px;
+            }
+            .chart-title { font-size: 14px; font-weight: 600; text-align: center; margin-bottom: 16px; color: var(--text-muted); }
+
+            /* Nav Filters */
+            .filter-tabs {
+                display: flex;
+                justify-content: flex-end;
+                gap: 8px;
+                margin-bottom: 20px;
+            }
+            .tab-btn {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                color: var(--text-muted);
+                padding: 6px 16px;
+                border-radius: 20px;
+                cursor: pointer;
+                font-size: 13px;
+            }
+            .tab-btn.active {
+                background: #f59e0b;
+                color: #000;
+                font-weight: 700;
+                border-color: #f59e0b;
+            }
+
+            /* Tables & Cards Section */
+            .section-card {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 24px;
+            }
+            .section-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+            }
+            .section-header h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+            .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+            .dot-meta { background: #3b82f6; }
+            .dot-tiktok { background: #ec4899; }
+            .dot-google { background: #10b981; }
+
+            table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            th, td { padding: 12px; text-align: right; border-bottom: 1px solid var(--border-color); }
+            th { color: var(--text-muted); font-weight: 500; font-size: 12px; }
+            tr:last-child td { border-bottom: none; }
+            
+            /* Banner Callout */
+            .info-banner {
+                background: #19160a;
+                border: 1px solid #45320d;
+                border-radius: 6px;
+                padding: 12px 16px;
+                margin-bottom: 24px;
+                font-size: 13px;
+                color: #fcd34d;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1 style="margin:0; font-size: 24px;">📊 تقرير قراءة النتائج المباشر</h1>
-                <p class="status" id="statusText">جاري تحميل البيانات تلقائياً...</p>
-                <button class="btn-refresh" onclick="fetchAndAnalyze()">🔄 تحديث التقرير الآن</button>
+            <!-- Header -->
+            <div class="header-bar">
+                <div class="header-title">
+                    <h1>التقرير اليومي للإعلانات</h1>
+                    <p id="updateTime">تقرير أداء يوم أمس - آخر تحديث: جاري التحميل...</p>
+                </div>
+                <div class="actions-group">
+                    <button class="btn btn-accent" onclick="fetchAndAnalyze()">تحديث البيانات</button>
+                </div>
             </div>
 
-            <div class="section-title">📌 ملخص أداء يوم أمس (الحملات النشطة)</div>
+            <!-- Top KPIs -->
             <div class="kpi-grid">
-                <div class="kpi-card"><div class="kpi-title">إجمالي الإنفاق</div><div class="kpi-value" id="yesterdaySpend">0.00 SAR</div></div>
-                <div class="kpi-card"><div class="kpi-title">إجمالي النقرات</div><div class="kpi-value" id="yesterdayClicks">0</div></div>
-                <div class="kpi-card"><div class="kpi-title">إجمالي التحويلات</div><div class="kpi-value" id="yesterdayConv">0</div></div>
-                <div class="kpi-card"><div class="kpi-title">متوسط تكلفة النقرة (CPC)</div><div class="kpi-value" id="yesterdayCPC">0.00 SAR</div></div>
+                <div class="kpi-card">
+                    <div class="label">Meta - إجمالي الإنفاق</div>
+                    <div class="val" id="metaSpend">0.00 ر.س</div>
+                    <div class="sub" id="metaConv">0 محادثة</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">TikTok - إجمالي الإنفاق</div>
+                    <div class="val" id="tiktokSpend">0.00 ر.س</div>
+                    <div class="sub" id="tiktokConv">0 تحويل</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">Google Ads - إجمالي الإنفاق</div>
+                    <div class="val" id="googleSpend">0.00 ر.س</div>
+                    <div class="sub" id="googleConv">0 تحويلات</div>
+                </div>
+                <div class="kpi-card highlight">
+                    <div class="label">إجمالي الإنفاق (كل المنصات)</div>
+                    <div class="val" id="totalSpend">0.00 ر.س</div>
+                    <div class="sub" id="totalAccounts">الحسابات النشطة</div>
+                </div>
             </div>
 
-            <table id="yesterdayTable">
-                <thead>
-                    <tr><th>المنصة</th><th>اسم الحملة</th><th>الإنفاق</th><th>الظهور</th><th>النقرات</th><th>التحويلات</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td colspan="6" style="text-align:center; color:#64748b;">جاري تحديث البيانات...</td></tr>
-                </tbody>
-            </table>
+            <!-- Chart -->
+            <div class="chart-card">
+                <div class="chart-title" id="chartLabel">الإنفاق حسب الحساب - أمس</div>
+                <div style="height: 280px;">
+                    <canvas id="spendChart"></canvas>
+                </div>
+            </div>
 
-            <div class="section-title">⚖️ مقارنة أداء الـ 14 يوماً الأخيرة بالفترة السابقة</div>
-            <table>
-                <thead>
-                    <tr><th>المؤشر</th><th>الـ 14 يوماً السابقة</th><th>الـ 14 يوماً الأخيرة</th><th>نسبة التغير</th></tr>
-                </thead>
-                <tbody id="compTable">
-                    <tr><td colspan="4" style="text-align:center; color:#64748b;">في انتظار قراءة البيانات...</td></tr>
-                </tbody>
-            </table>
+            <!-- Tabs Filter -->
+            <div class="filter-tabs">
+                <button class="tab-btn active" onclick="filterPlatform('all')">الكل</button>
+                <button class="tab-btn" onclick="filterPlatform('meta')">Meta</button>
+                <button class="tab-btn" onclick="filterPlatform('tiktok')">TikTok</button>
+                <button class="tab-btn" onclick="filterPlatform('google')">Google Ads</button>
+            </div>
+
+            <!-- Meta Section -->
+            <div class="section-card platform-sec" id="sec-meta">
+                <div class="section-header">
+                    <h3><span class="dot dot-meta"></span> Meta Ads</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الحملة</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>المحادثات/النتائج</th>
+                        </tr>
+                    </thead>
+                    <tbody id="metaTable">
+                        <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- TikTok Section -->
+            <div class="section-card platform-sec" id="sec-tiktok">
+                <div class="section-header">
+                    <h3><span class="dot dot-tiktok"></span> TikTok Ads</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الحملة</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>التحويلات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tiktokTable">
+                        <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Google Section -->
+            <div class="section-card platform-sec" id="sec-google">
+                <div class="section-header">
+                    <h3><span class="dot dot-google"></span> Google Ads</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الحملة</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>التحويلات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="googleTable">
+                        <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="info-banner">
+                ⚠️ لا تقارن "محادثات Meta" بـ "تحويلات Google" كأنها نفس النتيجة – كل منصة تُعرّف النتيجة بحدث مختلف تماماً.
+            </div>
         </div>
 
         <script>
-            const allowedMetaAccounts = ["1085415013613251", "1203619500645957"];
-            const allowedTiktokAccounts = ["7477300225556824081", "7438927058295996417"];
+            let myChart = null;
 
             async function fetchAndAnalyze() {
-                document.getElementById('statusText').innerText = "جاري الاتصال بالـ API وجلب حملات Meta و TikTok المحددة...";
                 try {
                     let res = await fetch('/api/data');
                     let rawData = await res.json();
                     
-                    let allRows = [];
-
-                    // 1. معالجة Meta Ads
-                    if (rawData.meta_ads && rawData.meta_ads.data) {
-                        rawData.meta_ads.data.forEach(r => {
-                            let isAccountValid = allowedMetaAccounts.includes(String(r.account_id));
-                            let status = (r.campaign_status || '').toUpperCase();
-                            let isActive = !r.campaign_status || status === 'ACTIVE' || status === 'ENABLE';
-                            if (isAccountValid && isActive) {
-                                r.platform = 'Meta Ads';
-                                allRows.push(r);
-                            }
-                        });
-                    }
-
-                    // 2. معالجة TikTok Ads
-                    if (rawData.tiktok_ads && rawData.tiktok_ads.data) {
-                        rawData.tiktok_ads.data.forEach(r => {
-                            let isAccountValid = allowedTiktokAccounts.includes(String(r.account_id)) || allowedTiktokAccounts.includes(String(r.advertiser_id));
-                            let status = (r.campaign_status || r.operation_status || '').toUpperCase();
-                            let isActive = !status || status === 'ENABLE' || status === 'ACTIVE' || status === 'CAMPAIGN_STATUS_ENABLE';
-                            
-                            if ((isAccountValid || !r.account_id) && isActive) {
-                                r.platform = 'TikTok Ads';
-                                allRows.push(r);
-                            }
-                        });
-                    }
-
-                    // 3. معالجة Google Ads
-                    if (rawData.google_ads && rawData.google_ads.data) {
-                        rawData.google_ads.data.forEach(r => {
-                            let status = (r.campaign_status || '').toUpperCase();
-                            let isActive = !status || status === 'ENABLED' || status === 'ACTIVE';
-                            if (isActive) {
-                                r.platform = 'Google Ads';
-                                allRows.push(r);
-                            }
-                        });
-                    }
-
-                    // حساب تاريخ الأمس
                     let now = new Date();
                     let yesterday = new Date(now);
                     yesterday.setDate(now.getDate() - 1);
                     let yesterdayStr = yesterday.toISOString().split('T')[0];
 
-                    // تصفية أداء يوم أمس
-                    let yRows = allRows.filter(r => r.date === yesterdayStr && (r.clicks > 0 || r.spend > 0));
-                    let ySpend = 0, yClicks = 0, yConv = 0;
-                    let yTbody = '';
+                    document.getElementById('updateTime').innerText = `تقرير أداء يوم ${yesterdayStr} - آخر تحديث: ${now.toLocaleTimeString('ar-SA')}`;
 
-                    yRows.forEach(r => {
-                        let spend = parseFloat(r.spend || 0);
-                        let clicks = parseInt(r.clicks || 0);
-                        let conv = parseFloat(r.conversions || 0);
-                        
-                        ySpend += spend;
-                        yClicks += clicks;
-                        yConv += conv;
+                    let mSpend = 0, mConv = 0;
+                    let tSpend = 0, tConv = 0;
+                    let gSpend = 0, gConv = 0;
 
-                        yTbody += `<tr>
-                            <td><strong>${r.platform}</strong></td>
-                            <td>${r.campaign_name}</td>
-                            <td>${spend.toFixed(2)} SAR</td>
-                            <td>${Number(r.impressions || 0).toLocaleString()}</td>
-                            <td>${clicks.toLocaleString()}</td>
-                            <td>${conv}</td>
-                        </tr>`;
-                    });
+                    let chartLabels = [];
+                    let chartData = [];
+                    let chartColors = [];
 
-                    document.getElementById('yesterdaySpend').innerText = ySpend.toFixed(2) + ' SAR';
-                    document.getElementById('yesterdayClicks').innerText = yClicks.toLocaleString();
-                    document.getElementById('yesterdayConv').innerText = yConv;
-                    document.getElementById('yesterdayCPC').innerText = yClicks > 0 ? (ySpend / yClicks).toFixed(2) + ' SAR' : '0.00 SAR';
-                    document.getElementById('yesterdayTable').querySelector('tbody').innerHTML = yTbody || '<tr><td colspan="6" style="text-align:center">لا توجد حملات نشطة مسجلة بتاريخ أمس.</td></tr>';
+                    // 1. Meta
+                    let mHtml = '';
+                    if (rawData.meta_ads && rawData.meta_ads.data) {
+                        let mRows = rawData.meta_ads.data.filter(r => r.date === yesterdayStr && (r.spend > 0 || r.clicks > 0));
+                        mRows.forEach(r => {
+                            let sp = parseFloat(r.spend || 0);
+                            let cv = parseFloat(r.conversions || 0);
+                            mSpend += sp;
+                            mConv += cv;
+                            mHtml += `<tr>
+                                <td><strong>${r.campaign_name}</strong></td>
+                                <td>${sp.toFixed(2)} ر.س</td>
+                                <td>${Number(r.impressions||0).toLocaleString()}</td>
+                                <td>${Number(r.clicks||0).toLocaleString()}</td>
+                                <td>${cv}</td>
+                            </tr>`;
+                        });
+                        if (mSpend > 0) {
+                            chartLabels.push('Meta Ads');
+                            chartData.push(mSpend);
+                            chartColors.push('#3b82f6');
+                        }
+                    }
+                    document.getElementById('metaSpend').innerText = mSpend.toFixed(2) + ' ر.س';
+                    document.getElementById('metaConv').innerText = mConv + ' محادثة/نتيجة';
+                    document.getElementById('metaTable').innerHTML = mHtml || '<tr><td colspan="5" style="text-align:center">لا توجد حملات نشطة بتاريخ أمس</td></tr>';
 
-                    // مقارنة الـ 14 يوماً
-                    let d14 = new Date(); d14.setDate(d14.getDate() - 14);
-                    let d28 = new Date(); d28.setDate(d28.getDate() - 28);
+                    // 2. TikTok
+                    let tHtml = '';
+                    if (rawData.tiktok_ads && rawData.tiktok_ads.data) {
+                        let tRows = rawData.tiktok_ads.data.filter(r => r.date === yesterdayStr && (r.spend > 0 || r.clicks > 0));
+                        tRows.forEach(r => {
+                            let sp = parseFloat(r.spend || 0);
+                            let cv = parseFloat(r.conversions || 0);
+                            tSpend += sp;
+                            tConv += cv;
+                            tHtml += `<tr>
+                                <td><strong>${r.campaign_name}</strong></td>
+                                <td>${sp.toFixed(2)} ر.س</td>
+                                <td>${Number(r.impressions||0).toLocaleString()}</td>
+                                <td>${Number(r.clicks||0).toLocaleString()}</td>
+                                <td>${cv}</td>
+                            </tr>`;
+                        });
+                        if (tSpend > 0) {
+                            chartLabels.push('TikTok Ads');
+                            chartData.push(tSpend);
+                            chartColors.push('#ec4899');
+                        }
+                    }
+                    document.getElementById('tiktokSpend').innerText = tSpend.toFixed(2) + ' ر.س';
+                    document.getElementById('tiktokConv').innerText = tConv + ' تحويل';
+                    document.getElementById('tiktokTable').innerHTML = tHtml || '<tr><td colspan="5" style="text-align:center">لا توجد حملات نشطة بتاريخ أمس</td></tr>';
 
-                    let recent14 = allRows.filter(r => new Date(r.date) >= d14);
-                    let prev14 = allRows.filter(r => new Date(r.date) >= d28 && new Date(r.date) < d14);
+                    // 3. Google
+                    let gHtml = '';
+                    if (rawData.google_ads && rawData.google_ads.data) {
+                        let gRows = rawData.google_ads.data.filter(r => r.date === yesterdayStr && (r.spend > 0 || r.clicks > 0));
+                        gRows.forEach(r => {
+                            let sp = parseFloat(r.spend || 0);
+                            let cv = parseFloat(r.conversions || 0);
+                            gSpend += sp;
+                            gConv += cv;
+                            gHtml += `<tr>
+                                <td><strong>${r.campaign_name}</strong></td>
+                                <td>${sp.toFixed(2)} ر.س</td>
+                                <td>${Number(r.impressions||0).toLocaleString()}</td>
+                                <td>${Number(r.clicks||0).toLocaleString()}</td>
+                                <td>${cv}</td>
+                            </tr>`;
+                        });
+                        if (gSpend > 0) {
+                            chartLabels.push('Google Ads');
+                            chartData.push(gSpend);
+                            chartColors.push('#10b981');
+                        }
+                    }
+                    document.getElementById('googleSpend').innerText = gSpend.toFixed(2) + ' ر.س';
+                    document.getElementById('googleConv').innerText = gConv + ' تحويلات';
+                    document.getElementById('googleTable').innerHTML = gHtml || '<tr><td colspan="5" style="text-align:center">لا توجد حملات نشطة بتاريخ أمس</td></tr>';
 
-                    let sumR14 = sumData(recent14);
-                    let sumP14 = sumData(prev14);
+                    // Totals
+                    let total = mSpend + tSpend + gSpend;
+                    document.getElementById('totalSpend').innerText = total.toFixed(2) + ' ر.س';
 
-                    let compHtml = `
-                        <tr><td>إجمالي الإنفاق</td><td>${sumP14.spend.toFixed(2)} SAR</td><td>${sumR14.spend.toFixed(2)} SAR</td><td>${getDiff(sumP14.spend, sumR14.spend)}</td></tr>
-                        <tr><td>إجمالي التحويلات</td><td>${sumP14.conv.toFixed(2)}</td><td>${sumR14.conv.toFixed(2)}</td><td>${getDiff(sumP14.conv, sumR14.conv)}</td></tr>
-                        <tr><td>إجمالي النقرات</td><td>${sumP14.clicks.toLocaleString()}</td><td>${sumR14.clicks.toLocaleString()}</td><td>${getDiff(sumP14.clicks, sumR14.clicks)}</td></tr>
-                    `;
-                    document.getElementById('compTable').innerHTML = compHtml;
-                    document.getElementById('statusText').innerText = "تم تحديث التقرير بنجاح!";
+                    // Render Chart
+                    renderChart(chartLabels, chartData, chartColors);
 
                 } catch(e) {
-                    document.getElementById('statusText').innerText = "حدث خطأ أثناء جلب البيانات من API.";
+                    console.error(e);
                 }
             }
 
-            function sumData(arr) {
-                return arr.reduce((acc, r) => {
-                    acc.spend += parseFloat(r.spend || 0);
-                    acc.clicks += parseInt(r.clicks || 0);
-                    acc.conv += parseFloat(r.conversions || 0);
-                    return acc;
-                }, {spend:0, clicks:0, conv:0});
+            function renderChart(labels, data, colors) {
+                const ctx = document.getElementById('spendChart').getContext('2d');
+                if (myChart) myChart.destroy();
+
+                myChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels.length ? labels : ['لا توجد بيانات'],
+                        datasets: [{
+                            data: data.length ? data : [0],
+                            backgroundColor: colors.length ? colors : ['#334155'],
+                            borderRadius: 6,
+                            barThickness: 50
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { grid: { display: false }, ticks: { color: '#8a94a6' } },
+                            y: { grid: { color: '#262b36' }, ticks: { color: '#8a94a6' } }
+                        }
+                    }
+                });
             }
 
-            function getDiff(prev, curr) {
-                if (prev === 0) return 'N/A';
-                let pct = (((curr - prev) / prev) * 100).toFixed(1);
-                return pct >= 0 ? `<span class="trend-up">📈 +${pct}%</span>` : `<span class="trend-down">📉 ${pct}%</span>`;
+            function filterPlatform(p) {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                event.target.classList.add('active');
+
+                let secs = document.querySelectorAll('.platform-sec');
+                if (p === 'all') {
+                    secs.forEach(s => s.style.display = 'block');
+                } else {
+                    secs.forEach(s => s.style.display = 'none');
+                    let target = document.getElementById('sec-' + p);
+                    if (target) target.style.display = 'block';
+                }
             }
 
             fetchAndAnalyze();
