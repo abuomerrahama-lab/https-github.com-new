@@ -1,5 +1,7 @@
 import os
+import asyncio
 import requests
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
@@ -10,6 +12,23 @@ WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
 # معرّفات الحسابات الإعلانية المحددة
 META_ACCOUNTS = "1085415013613251,1203619500645957"
 TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
+
+# آلية الـ Keep-Alive لمنع وضع الخمول على Render
+@app.on_event("startup")
+async def start_keep_alive():
+    async def keep_alive():
+        await asyncio.sleep(10)
+        while True:
+            render_url = os.getenv("RENDER_EXTERNAL_URL")
+            if render_url:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.get(render_url, timeout=10.0)
+                except Exception:
+                    pass
+            await asyncio.sleep(300) # كل 5 دقائق
+
+    asyncio.create_task(keep_alive())
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -101,7 +120,7 @@ def home():
                         });
                     }
 
-                    // 2. معالجة TikTok Ads (مع التحقق من ID الحساب والحملات النشطة)
+                    // 2. معالجة TikTok Ads
                     if (rawData.tiktok_ads && rawData.tiktok_ads.data) {
                         rawData.tiktok_ads.data.forEach(r => {
                             let isAccountValid = allowedTiktokAccounts.includes(String(r.account_id)) || allowedTiktokAccounts.includes(String(r.advertiser_id));
