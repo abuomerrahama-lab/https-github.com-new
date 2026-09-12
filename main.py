@@ -1,34 +1,78 @@
 import os
+import time
 import asyncio
 from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
+# المفاتيح الحسابية
 WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
-
 META_ACCOUNTS = "1085415013613251,1203619500645957"
 TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
 
+# الذاكرة المؤقتة للسرعة الفائقة
+CACHE_DATA = None
+LAST_FETCH_TIME = 0
+CACHE_DURATION = 600  # التخزين لمدة 10 دقائق (600 ثانية)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # بوت التنشيط التلقائي لمنع خمول Render
     async def keep_alive():
-        await asyncio.sleep(10)
+        await asyncio.sleep(15)
         while True:
             render_url = os.getenv("RENDER_EXTERNAL_URL")
             if render_url:
                 try:
                     async with httpx.AsyncClient() as client:
                         await client.get(render_url, timeout=10.0)
-                except Exception:
-                    pass
-            await asyncio.sleep(300)
+                        print("⚡ Keep-alive ping sent successfully!")
+                except Exception as e:
+                    print(f"⚠️ Keep-alive ping failed: {e}")
+            await asyncio.sleep(600) # يكرر التنشيط كل 10 دقائق
 
     task = asyncio.create_task(keep_alive())
     yield
     task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+
+@app.get("/api/data")
+async def get_data():
+    global CACHE_DATA, LAST_FETCH_TIME
+    
+    if not WINDSOR_API_KEY:
+        return {"error": "WINDSOR_API_KEY غير معرف"}
+    
+    # 1. إرجاع البيانات فوراً إذا كانت مخزنة ومحدثة خلال آخر 10 دقائق
+    now = time.time()
+    if CACHE_DATA and (now - LAST_FETCH_TIME < CACHE_DURATION):
+        return CACHE_DATA
+
+    meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,actions&date_preset=last_7d&account_id={META_ACCOUNTS}"
+    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_7d&account_id={TIKTOK_ACCOUNTS}"
+    google_params = "&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_7d"
+
+    # 2. التوازي الكامل في طلب البيانات (Parallel Fetching) لسرعة استجابة فائقة
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        meta_req = client.get(f"https://connectors.windsor.ai/facebook?api_key={WINDSOR_API_KEY}{meta_params}")
+        tiktok_req = client.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{tiktok_params}")
+        google_req = client.get(f"https://connectors.windsor.ai/google_ads?api_key={WINDSOR_API_KEY}{google_params}")
+
+        res_meta, res_tiktok, res_google = await asyncio.gather(
+            meta_req, tiktok_req, google_req, return_exceptions=True
+        )
+
+        results = {
+            "meta_ads": res_meta.json() if isinstance(res_meta, httpx.Response) and res_meta.status_code == 200 else {"data": []},
+            "tiktok_ads": res_tiktok.json() if isinstance(res_tiktok, httpx.Response) and res_tiktok.status_code == 200 else {"data": []},
+            "google_ads": res_google.json() if isinstance(res_google, httpx.Response) and res_google.status_code == 200 else {"data": []}
+        }
+
+    CACHE_DATA = results
+    LAST_FETCH_TIME = now
+    return results
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -538,20 +582,20 @@ def home():
                     return;
                 }
 
-                // Rule 1: Wasted spend (Spend > 100 & Conv == 0)
+                // Rule 1: Wasted spend
                 let wasted = campaigns.filter(c => c.spend > 100 && c.conv === 0);
                 wasted.forEach(c => {
                     items.push(`<div class="diag-item diag-red"><i class="fa-solid fa-triangle-exclamation"></i> <strong>تنبيه إهدار [${c.platform}]:</strong> الحملة <strong>"${c.name}"</strong> أنفقت ${c.spend.toFixed(2)} ر.س بدون تحقيق أي نتيجة. يُنصح بتعديل الاستهداف أو إيقافها.</div>`);
                 });
 
-                // Rule 2: High efficiency (Best CPA)
+                // Rule 2: High efficiency
                 let winning = campaigns.filter(c => c.conv > 0).sort((a,b) => a.cpa - b.cpa);
                 if (winning.length > 0) {
                     let best = winning[0];
                     items.push(`<div class="diag-item diag-green"><i class="fa-solid fa-circle-check"></i> <strong>حملة متميزة [${best.platform}]:</strong> الحملة <strong>"${best.name}"</strong> حققت أفضل تكلفة نتيجة بـ (${best.cpa.toFixed(2)} ر.س/نتيجة). فرصة لزيادة الميزانية بها.</div>`);
                 }
 
-                // Rule 3: High CPC (> 2.50 SAR)
+                // Rule 3: High CPC
                 let highCpc = campaigns.filter(c => c.clicks > 10 && c.cpc > 2.50);
                 highCpc.forEach(c => {
                     items.push(`<div class="diag-item diag-yellow"><i class="fa-solid fa-triangle-exclamation"></i> <strong>ارتفاع تكلفة النقرة [${c.platform}]:</strong> الحملة <strong>"${c.name}"</strong> سجلت CPC مرتفع بـ (${c.cpc.toFixed(2)} ر.س). يرجى مراجعة جودة الإعلان والمحتوى.</div>`);
@@ -606,34 +650,3 @@ def home():
     </body>
     </html>
     """
-
-@app.get("/api/data")
-async def get_data():
-    if not WINDSOR_API_KEY:
-        return {"error": "WINDSOR_API_KEY غير معرف"}
-    
-    results = {}
-    meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,actions,campaign_status,account_id&date_preset=last_30d&account_id={META_ACCOUNTS}"
-    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status,account_id,advertiser_id&date_preset=last_30d&account_id={TIKTOK_ACCOUNTS}"
-    general_params = "&fields=date,campaign_name,clicks,impressions,spend,conversions,campaign_status&date_preset=last_30d"
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.get(f"https://connectors.windsor.ai/facebook?api_key={WINDSOR_API_KEY}{meta_params}")
-            results["meta_ads"] = r.json()
-        except Exception as e:
-            results["meta_ads"] = {"error": str(e)}
-
-        try:
-            r = await client.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{tiktok_params}")
-            results["tiktok_ads"] = r.json()
-        except Exception as e:
-            results["tiktok_ads"] = {"error": str(e)}
-
-        try:
-            r = await client.get(f"https://connectors.windsor.ai/google_ads?api_key={WINDSOR_API_KEY}{general_params}")
-            results["google_ads"] = r.json()
-        except Exception as e:
-            results["google_ads"] = {"error": str(e)}
-
-    return results
