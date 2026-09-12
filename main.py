@@ -4,74 +4,134 @@ import asyncio
 from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
-# المفاتيح الحسابية
+# ============================================================
+# الإعدادات
+# ============================================================
 WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
 META_ACCOUNTS = "1085415013613251,1203619500645957"
 TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
 
-# الذاكرة المؤقتة للسرعة الفائقة
-CACHE_DATA = None
-LAST_FETCH_TIME = 0
-CACHE_DURATION = 300  # التخزين لمدة 5 دقائق
+REFRESH_INTERVAL = 90     # كل كم ثانية يحدّث الكاش في الخلفية (كان قبل: يُحسب فقط عند الطلب)
+FETCH_TIMEOUT = 12.0      # مهلة كل منصة أثناء التحديث الخلفي (لا يشعر بها أي زائر أبدًا)
+
+# ============================================================
+# الكاش المشترك — هذا هو الحل الحقيقي للبطء
+#
+# المشكلة في الكود القديم: /api/data كان يستدعي Windsor مباشرة
+# أثناء طلب الزائر نفسه، فإذا تأخرت منصة واحدة (شائع مع TikTok/Meta)
+# ينتظر الزائر كامل مدة timeout قبل أن يرى أي شيء.
+#
+# الحل: مهمة خلفية منفصلة (Background Task) تسحب البيانات من Windsor
+# كل REFRESH_INTERVAL ثانية وتحدّث الكاش بصمت. أما /api/data فلا يتصل
+# بـ Windsor إطلاقًا — يعيد فقط آخر نسخة جاهزة من الذاكرة، فوريًا
+# (أقل من 5 مللي ثانية) بغض النظر عن سرعة Windsor أو حالة الشبكة.
+# ============================================================
+CACHE = {
+    "meta_ads": {"data": []},
+    "tiktok_ads": {"data": []},
+    "google_ads": {"data": []},
+}
+CACHE_UPDATED_AT = 0
+CACHE_READY = asyncio.Event()   # يُرفع بعد أول تحديث ناجح واحد على الأقل
+
+
+async def fetch_platform(client: httpx.AsyncClient, name: str, url: str):
+    """يجلب منصة واحدة بأمان — فشل منصة واحدة لا يوقف تحديث البقية،
+    ولا يمسح آخر بيانات ناجحة لها (يبقيها في الكاش بدل تصفيرها)."""
+    try:
+        res = await client.get(url, timeout=FETCH_TIMEOUT)
+        if res.status_code == 200:
+            return name, res.json()
+        print(f"⚠️ {name}: HTTP {res.status_code}")
+    except Exception as e:
+        print(f"⚠️ {name}: فشل التحديث ({e}) — سيتم الاحتفاظ بآخر بيانات صالحة")
+    return name, None  # None = فشل → لا نلمس الكاش الحالي لهذه المنصة
+
+
+async def refresh_cache_once():
+    global CACHE_UPDATED_AT
+    if not WINDSOR_API_KEY:
+        print("⚠️ WINDSOR_API_KEY غير معرف — تخطي التحديث")
+        return
+
+    params = f"?api_key={WINDSOR_API_KEY}&date_preset=last_7d"
+    urls = {
+        "meta_ads": f"https://connectors.windsor.ai/facebook{params}&account_id={META_ACCOUNTS}&fields=date,campaign_name,clicks,impressions,spend,conversions,actions",
+        "tiktok_ads": f"https://connectors.windsor.ai/tiktok{params}&account_id={TIKTOK_ACCOUNTS}&fields=date,campaign_name,clicks,impressions,spend,conversions,ctr,cpc",
+        "google_ads": f"https://connectors.windsor.ai/google_ads{params}&fields=date,campaign_name,clicks,impressions,spend,conversions",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # الثلاث منصات تُسحب بالتوازي، وكل واحدة مستقلة عن الأخرى تمامًا
+        results = await asyncio.gather(*[
+            fetch_platform(client, name, url) for name, url in urls.items()
+        ])
+
+    for name, payload in results:
+        if payload is not None:
+            CACHE[name] = payload
+
+    CACHE_UPDATED_AT = time.time()
+    CACHE_READY.set()
+    print(f"✅ تحديث الكاش تم — {time.strftime('%H:%M:%S')}")
+
+
+async def background_refresh_loop():
+    # أول تحديث فوري عند إقلاع السيرفر (مرة واحدة فقط لكل نشر/إعادة تشغيل،
+    # وليس لكل زائر) — بعده يستمر تلقائيًا كل REFRESH_INTERVAL ثانية
+    while True:
+        await refresh_cache_once()
+        await asyncio.sleep(REFRESH_INTERVAL)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # بوت التنشيط التلقائي لمنع خمول Render
+    refresh_task = asyncio.create_task(background_refresh_loop())
+
+    # بوت keep-alive لمنع خمول Render المجاني (سبب شائع جدًا لبطء أول تحميل
+    # بعد فترة عدم استخدام — Render يوقف الخدمة تمامًا بعد ~15 دقيقة خمول)
     async def keep_alive():
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
         while True:
             render_url = os.getenv("RENDER_EXTERNAL_URL")
             if render_url:
                 try:
                     async with httpx.AsyncClient() as client:
-                        await client.get(render_url, timeout=10.0)
+                        await client.get(render_url, timeout=5.0)
                         print("⚡ Keep-alive ping sent successfully!")
                 except Exception as e:
                     print(f"⚠️ Keep-alive ping failed: {e}")
-            await asyncio.sleep(600) # يكرر التنشيط كل 10 دقائق
+            await asyncio.sleep(240)  # كل 4 دقائق — أقصر من مهلة الخمول 15 دقيقة بهامش أمان
 
-    task = asyncio.create_task(keep_alive())
+    keepalive_task = asyncio.create_task(keep_alive())
     yield
-    task.cancel()
+    refresh_task.cancel()
+    keepalive_task.cancel()
+
 
 app = FastAPI(lifespan=lifespan)
 
+
 @app.get("/api/data")
 async def get_data():
-    global CACHE_DATA, LAST_FETCH_TIME
-    
-    if not WINDSOR_API_KEY:
-        return {"error": "WINDSOR_API_KEY غير معرف"}
-    
-    now = time.time()
-    if CACHE_DATA and (now - LAST_FETCH_TIME < CACHE_DURATION):
-        return CACHE_DATA
+    """لا يتصل بـ Windsor أبدًا — يعيد فقط آخر نسخة جاهزة في الذاكرة.
+    استجابة فورية دائمًا، حتى لو كانت Windsor نفسها بطيئة أو متعطلة."""
+    return JSONResponse(CACHE, headers={"X-Cache-Age-Seconds": str(round(time.time() - CACHE_UPDATED_AT, 1)) if CACHE_UPDATED_AT else "n/a"})
 
-    meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,actions&date_preset=last_7d&account_id={META_ACCOUNTS}"
-    # إضافة ctr صراحة في حقول تيك توك
-    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,ctr,cpc&date_preset=last_7d&account_id={TIKTOK_ACCOUNTS}"
-    google_params = "&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_7d"
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        meta_req = client.get(f"https://connectors.windsor.ai/facebook?api_key={WINDSOR_API_KEY}{meta_params}")
-        tiktok_req = client.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{tiktok_params}")
-        google_req = client.get(f"https://connectors.windsor.ai/google_ads?api_key={WINDSOR_API_KEY}{google_params}")
+@app.get("/api/status")
+async def get_status():
+    """للتشخيص السريع: هل الكاش دافئ؟ ومتى آخر تحديث فعلي؟"""
+    age = round(time.time() - CACHE_UPDATED_AT, 1) if CACHE_UPDATED_AT else None
+    return {
+        "cache_ready": CACHE_READY.is_set(),
+        "last_update_seconds_ago": age,
+        "refresh_interval_seconds": REFRESH_INTERVAL,
+        "rows": {k: len(v.get("data", [])) for k, v in CACHE.items()},
+    }
 
-        res_meta, res_tiktok, res_google = await asyncio.gather(
-            meta_req, tiktok_req, google_req, return_exceptions=True
-        )
-
-        results = {
-            "meta_ads": res_meta.json() if isinstance(res_meta, httpx.Response) and res_meta.status_code == 200 else {"data": []},
-            "tiktok_ads": res_tiktok.json() if isinstance(res_tiktok, httpx.Response) and res_tiktok.status_code == 200 else {"data": []},
-            "google_ads": res_google.json() if isinstance(res_google, httpx.Response) and res_google.status_code == 200 else {"data": []}
-        }
-
-    CACHE_DATA = results
-    LAST_FETCH_TIME = now
-    return results
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -81,8 +141,10 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة التحليلات المتقدمة للإعلانات</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <title>لوحة تحليلات الإعلانات المتقدمة</title>
+        <link rel="preconnect" href="https://cdn.jsdelivr.net">
+        <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+        <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
         <style>
             :root {
@@ -107,7 +169,7 @@ def home():
                 direction: rtl;
             }
             .container { max-width: 1300px; margin: 0 auto; }
-            
+
             .header-bar {
                 display: flex;
                 justify-content: space-between;
@@ -117,11 +179,14 @@ def home():
                 padding: 20px 24px;
                 border-radius: 12px;
                 border: 1px solid var(--border-color);
+                flex-wrap: wrap;
+                gap: 12px;
             }
             .header-title h1 { margin: 0; font-size: 22px; font-weight: 800; color: #fff; }
             .header-title p { margin: 6px 0 0; font-size: 13px; color: var(--text-muted); }
-            
-            .actions-group { display: flex; gap: 12px; align-items: center; }
+            .header-title p.stale { color: var(--accent-gold); }
+
+            .actions-group { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
             .btn {
                 background: var(--bg-card);
                 border: 1px solid var(--border-color);
@@ -140,25 +205,6 @@ def home():
             .btn-accent { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; border: none; }
             .btn-copy { background: linear-gradient(135deg, #10b981, #047857); color: #fff; border: none; }
 
-            .time-selector {
-                display: flex;
-                background: var(--bg-main);
-                padding: 4px;
-                border-radius: 8px;
-                border: 1px solid var(--border-color);
-            }
-            .time-btn {
-                background: transparent;
-                border: none;
-                color: var(--text-muted);
-                padding: 6px 14px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            .time-btn.active { background: var(--border-color); color: #fff; }
-
             .kpi-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -176,7 +222,7 @@ def home():
             .kpi-card .label { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
             .kpi-card .val { font-size: 26px; font-weight: 800; color: #fff; }
             .kpi-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 8px; }
-            
+
             .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
             .badge-success { background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
             .badge-warning { background: rgba(245,158,11,0.2); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
@@ -223,7 +269,7 @@ def home():
             th, td { padding: 14px 12px; text-align: right; border-bottom: 1px solid var(--border-color); }
             th { color: var(--text-muted); font-weight: 600; font-size: 12px; background: rgba(255,255,255,0.02); }
             tr:hover td { background: var(--bg-card-hover); }
-            
+
             .text-green { color: var(--accent-green); font-weight: 700; }
             .text-gold { color: var(--accent-gold); font-weight: 700; }
             .toast {
@@ -246,14 +292,10 @@ def home():
             <div class="header-bar">
                 <div class="header-title">
                     <h1><i class="fa-solid fa-chart-pie" style="color: var(--accent-gold); margin-left:8px;"></i> لوحة تحليلات الإعلانات المتقدمة</h1>
-                    <p id="updateTime">جاري قراءة البيانات المباشرة...</p>
+                    <p id="updateTime">جاري تحميل آخر نسخة محفوظة...</p>
                 </div>
                 <div class="actions-group">
-                    <div class="time-selector">
-                        <button class="time-btn" onclick="setTimeRange('all')">كل البيانات المسحوبة</button>
-                        <button class="time-btn active" onclick="setTimeRange('last7')">آخر 7 أيام</button>
-                    </div>
-                    <button class="btn btn-accent" onclick="fetchAndAnalyze()"><i class="fa-solid fa-rotate"></i> تحديث</button>
+                    <button class="btn btn-accent" onclick="fetchAndAnalyze(true)"><i class="fa-solid fa-rotate"></i> تحديث سريع</button>
                     <button class="btn btn-copy" onclick="copyDataForAI()"><i class="fa-solid fa-copy"></i> نسخ التقرير للذكاء الاصطناعي</button>
                 </div>
             </div>
@@ -285,7 +327,7 @@ def home():
             <!-- TikTok Section -->
             <div class="section-card">
                 <div class="section-header">
-                    <h3><span class="dot dot-tiktok"></span> TikTok Ads - تقييم نجاح الإعلانات حسب الجاذبية (CTR & CPC)</h3>
+                    <h3><span class="dot dot-tiktok"></span> TikTok Ads - تقييم الأداء والجاذبية</h3>
                 </div>
                 <table>
                     <thead>
@@ -300,16 +342,62 @@ def home():
                         </tr>
                     </thead>
                     <tbody id="tiktokTable">
-                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري قراءة البيانات...</td></tr>
+                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Meta Section -->
+            <div class="section-card">
+                <div class="section-header">
+                    <h3><span class="dot dot-meta"></span> Meta Ads - تقييم الحملات والمحادثات</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الحملة</th>
+                            <th>التقييم الذكي</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>CPC</th>
+                            <th>المحادثات / الرسائل</th>
+                        </tr>
+                    </thead>
+                    <tbody id="metaTable">
+                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Google Section -->
+            <div class="section-card">
+                <div class="section-header">
+                    <h3><span class="dot dot-google"></span> Google Ads - تقييم النتائج</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الحملة</th>
+                            <th>التقييم الذكي</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>CPC</th>
+                            <th>التحويلات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="googleTable">
+                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
                     </tbody>
                 </table>
             </div>
 
             <!-- Smart Diagnostics Box -->
             <div class="diag-box">
-                <div class="diag-title"><i class="fa-solid fa-lightbulb"></i> التحليل البرمجي التلقائي للحملات</div>
+                <div class="diag-title"><i class="fa-solid fa-lightbulb"></i> التحليل البرمجي التلقائي الشامل لجميع المنصات</div>
                 <div class="diag-list" id="diagList">
-                    <div class="diag-item diag-yellow"><i class="fa-solid fa-spinner fa-spin"></i> جاري إكمال قراءة البيانات لبدء التحليل...</div>
+                    <div class="diag-item diag-yellow"><i class="fa-solid fa-spinner fa-spin"></i> جاري قراءة بيانات المنصات لاستخراج التوصيات...</div>
                 </div>
             </div>
 
@@ -320,84 +408,62 @@ def home():
                     <canvas id="spendChart"></canvas>
                 </div>
             </div>
-
-            <!-- Meta Section -->
-            <div class="section-card">
-                <div class="section-header">
-                    <h3><span class="dot dot-meta"></span> Meta Ads - أداء الحملات والرسائل</h3>
-                </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>الحملة</th>
-                            <th>الإنفاق</th>
-                            <th>الظهور</th>
-                            <th>النقرات</th>
-                            <th>CPC</th>
-                            <th>المحادثات / الرسائل</th>
-                        </tr>
-                    </thead>
-                    <tbody id="metaTable">
-                        <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Google Section -->
-            <div class="section-card">
-                <div class="section-header">
-                    <h3><span class="dot dot-google"></span> Google Ads</h3>
-                </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>الحملة</th>
-                            <th>الإنفاق</th>
-                            <th>الظهور</th>
-                            <th>النقرات</th>
-                            <th>CPC</th>
-                            <th>التحويلات</th>
-                        </tr>
-                    </thead>
-                    <tbody id="googleTable">
-                        <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
-                    </tbody>
-                </table>
-            </div>
         </div>
 
         <div class="toast" id="toast">✅ تم نسخ التقرير الحافظة بنجاح!</div>
 
         <script>
-            let rawDataCache = null;
-            let currentRange = 'last7';
+            const CACHE_KEY = "ads_dashboard_cache_v1";
             let myChart = null;
             let currentSummaryText = "";
 
-            function setTimeRange(range) {
-                currentRange = range;
-                document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
-                event.target.classList.add('active');
-                if (rawDataCache) renderData(rawDataCache);
+            // ============================================================
+            // الخطوة 1: ارسم فورًا أي نسخة محفوظة محليًا من الزيارة السابقة
+            // (Stale-While-Revalidate) — الزائر يرى أرقامًا خلال أجزاء من
+            // الثانية بدل شاشة "جاري القراءة" الفارغة، حتى قبل اكتمال أي
+            // اتصال بالشبكة.
+            // ============================================================
+            function loadFromLocalCache() {
+                try {
+                    const raw = localStorage.getItem(CACHE_KEY);
+                    if (!raw) return false;
+                    const cached = JSON.parse(raw);
+                    renderData(cached.data, cached.savedAt, true);
+                    return true;
+                } catch (e) { return false; }
             }
 
-            async function fetchAndAnalyze() {
+            function saveToLocalCache(data) {
                 try {
-                    document.getElementById('updateTime').innerText = "جاري الاتصال بـ Windsor.ai لقراءة البيانات...";
-                    let res = await fetch('/api/data');
-                    rawDataCache = await res.json();
-                    renderData(rawDataCache);
-                } catch(e) {
+                    localStorage.setItem(CACHE_KEY, JSON.stringify({ data, savedAt: Date.now() }));
+                } catch (e) { /* ignore quota errors */ }
+            }
+
+            // ============================================================
+            // الخطوة 2: اطلب من السيرفر — وهو الآن يرد فورًا من كاش خلفي
+            // دافئ دائمًا (راجع main.py: /api/data لا يتصل بـ Windsor إطلاقًا
+            // أثناء الطلب) بدل الانتظار على استجابة Windsor نفسها.
+            // ============================================================
+            async function fetchAndAnalyze(forceSpinner = false) {
+                if (forceSpinner) {
+                    document.getElementById('updateTime').innerText = "جاري التحديث...";
+                }
+                try {
+                    let res = await fetch('/api/data', { cache: 'no-store' });
+                    let data = await res.json();
+                    renderData(data, Date.now(), false);
+                    saveToLocalCache(data);
+                } catch (e) {
                     console.error(e);
-                    document.getElementById('updateTime').innerText = "حدث خطأ في جلب البيانات، يرجى تحديث الصفحة.";
+                    document.getElementById('updateTime').innerText = "تعذّر الوصول للسيرفر — يُعرض آخر نسخة محفوظة محليًا.";
                 }
             }
 
             function extractMetaConversations(row) {
                 let cv = parseFloat(row.conversions || 0);
                 if (row.actions && Array.isArray(row.actions)) {
-                    let msgAction = row.actions.find(a => 
-                        a.action_type.includes('messaging_conversation_started') || 
+                    let msgAction = row.actions.find(a =>
+                        a.action_type.includes('messaging_conversation_started') ||
                         a.action_type.includes('onsite_conversion.messaging') ||
                         a.action_type.includes('lead')
                     );
@@ -406,50 +472,59 @@ def home():
                 return cv;
             }
 
-            function renderData(data) {
-                document.getElementById('updateTime').innerText = `تم تحديث البيانات المباشرة بنجاح: ${new Date().toLocaleTimeString('ar-SA')}`;
+            function evaluateCampaign(ctr, cpc, spend, conv, platform) {
+                if (platform === 'TikTok') {
+                    if (ctr >= 1.0 && (cpc <= 1.5 || cpc === 0)) {
+                        return { html: '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> ناجح ممتاز</span>', status: 'ناجح' };
+                    } else if (ctr >= 0.6) {
+                        return { html: '<span class="badge badge-warning"><i class="fa-solid fa-triangle-exclamation"></i> متوسط الجاذبية</span>', status: 'متوسط' };
+                    } else {
+                        return { html: '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> ضعيف / فاشل</span>', status: 'فاشل' };
+                    }
+                } else {
+                    if (conv > 0 || (cpc > 0 && cpc <= 2.0 && spend > 0)) {
+                        return { html: '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> أداء ممتاز</span>', status: 'ناجح' };
+                    } else if (spend > 0 && conv === 0 && spend > 50) {
+                        return { html: '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> مرتفع التكلفة</span>', status: 'فاشل' };
+                    } else {
+                        return { html: '<span class="badge badge-warning"><i class="fa-solid fa-clock"></i> تحت المراقبة</span>', status: 'متوسط' };
+                    }
+                }
+            }
+
+            function renderData(data, savedAt, isFromLocalCache) {
+                const ageLabel = isFromLocalCache
+                    ? `آخر نسخة محفوظة على جهازك — ${new Date(savedAt).toLocaleTimeString('ar-SA')} (جاري التحديث في الخلفية...)`
+                    : `تم تحديث البيانات: ${new Date(savedAt).toLocaleTimeString('ar-SA')}`;
+                const timeEl = document.getElementById('updateTime');
+                timeEl.innerText = ageLabel;
+                timeEl.classList.toggle('stale', !!isFromLocalCache);
 
                 let mSpend = 0, mConv = 0, mClicks = 0;
                 let tSpend = 0, tConv = 0, tClicks = 0;
                 let gSpend = 0, gConv = 0, gClicks = 0;
 
-                let tiktokCampaignsList = [];
-                let allCampaigns = [];
+                let allEvaluatedCampaigns = [];
 
-                // 1. TikTok Data Processing & Smart Evaluation Badge
+                // 1. TikTok Data
                 let tHtml = '';
                 if (data.tiktok_ads && data.tiktok_ads.data && data.tiktok_ads.data.length > 0) {
-                    let rows = data.tiktok_ads.data;
-                    rows.forEach(r => {
+                    data.tiktok_ads.data.forEach(r => {
                         let sp = parseFloat(r.spend || 0);
                         let clk = parseInt(r.clicks || 0);
                         let imp = parseInt(r.impressions || 0);
                         let cv = parseFloat(r.conversions || 0);
                         let ctr = r.ctr ? (parseFloat(r.ctr) * (parseFloat(r.ctr) < 1 ? 100 : 1)) : (imp > 0 ? (clk / imp) * 100 : 0);
-                        let cpc = clk > 0 ? (sp / clk) : (parseFloat(r.cpc || 0));
+                        let cpc = clk > 0 ? (sp / clk) : parseFloat(r.cpc || 0);
 
                         tSpend += sp; tConv += cv; tClicks += clk;
 
-                        // Evaluation Logic based on CTR & CPC
-                        let badgeHtml = '';
-                        let statusText = '';
-                        if (ctr >= 1.0 && (cpc <= 1.5 || cpc === 0)) {
-                            badgeHtml = '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> ناجح ممتاز</span>';
-                            statusText = 'ناجح';
-                        } else if (ctr >= 0.6) {
-                            badgeHtml = '<span class="badge badge-warning"><i class="fa-solid fa-triangle-exclamation"></i> متوسط الجاذبية</span>';
-                            statusText = 'متوسط';
-                        } else {
-                            badgeHtml = '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> ضعيف / فاشل</span>';
-                            statusText = 'فاشل';
-                        }
-
-                        tiktokCampaignsList.push({ name: r.campaign_name, spend: sp, clicks: clk, ctr: ctr, cpc: cpc, status: statusText });
-                        allCampaigns.push({ platform: 'TikTok', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
+                        let evalRes = evaluateCampaign(ctr, cpc, sp, cv, 'TikTok');
+                        allEvaluatedCampaigns.push({ platform: 'TikTok', name: r.campaign_name, spend: sp, ctr: ctr, cpc: cpc, conv: cv, status: evalRes.status });
 
                         tHtml += `<tr>
                             <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
-                            <td>${badgeHtml}</td>
+                            <td>${evalRes.html}</td>
                             <td>${sp.toFixed(2)} ر.س</td>
                             <td>${imp.toLocaleString()}</td>
                             <td>${clk.toLocaleString()}</td>
@@ -471,13 +546,17 @@ def home():
                         let clk = parseInt(r.clicks || 0);
                         let imp = parseInt(r.impressions || 0);
                         let cv = extractMetaConversations(r);
-                        mSpend += sp; mConv += cv; mClicks += clk;
                         let cpc = clk > 0 ? (sp / clk) : 0;
+                        let ctr = imp > 0 ? (clk / imp) * 100 : 0;
 
-                        allCampaigns.push({ platform: 'Meta', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
+                        mSpend += sp; mConv += cv; mClicks += clk;
+
+                        let evalRes = evaluateCampaign(ctr, cpc, sp, cv, 'Meta');
+                        allEvaluatedCampaigns.push({ platform: 'Meta', name: r.campaign_name, spend: sp, ctr: ctr, cpc: cpc, conv: cv, status: evalRes.status });
 
                         mHtml += `<tr>
                             <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
+                            <td>${evalRes.html}</td>
                             <td>${sp.toFixed(2)} ر.س</td>
                             <td>${imp.toLocaleString()}</td>
                             <td>${clk.toLocaleString()}</td>
@@ -489,7 +568,7 @@ def home():
                 document.getElementById('metaSpend').innerText = mSpend.toFixed(2) + ' ر.س';
                 document.getElementById('metaConv').innerText = mConv + ' محادثة';
                 document.getElementById('metaCpc').innerText = 'CPC: ' + (mClicks > 0 ? (mSpend/mClicks).toFixed(2) : '0.00') + ' ر.س';
-                document.getElementById('metaTable').innerHTML = mHtml || '<tr><td colspan="6" style="text-align:center">لا توجد بيانات متاحة لـ Meta</td></tr>';
+                document.getElementById('metaTable').innerHTML = mHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات متاحة لـ Meta</td></tr>';
 
                 // 3. Google Data
                 let gHtml = '';
@@ -499,13 +578,17 @@ def home():
                         let clk = parseInt(r.clicks || 0);
                         let imp = parseInt(r.impressions || 0);
                         let cv = parseFloat(r.conversions || 0);
-                        gSpend += sp; gConv += cv; gClicks += clk;
                         let cpc = clk > 0 ? (sp / clk) : 0;
+                        let ctr = imp > 0 ? (clk / imp) * 100 : 0;
 
-                        allCampaigns.push({ platform: 'Google', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
+                        gSpend += sp; gConv += cv; gClicks += clk;
+
+                        let evalRes = evaluateCampaign(ctr, cpc, sp, cv, 'Google');
+                        allEvaluatedCampaigns.push({ platform: 'Google', name: r.campaign_name, spend: sp, ctr: ctr, cpc: cpc, conv: cv, status: evalRes.status });
 
                         gHtml += `<tr>
                             <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
+                            <td>${evalRes.html}</td>
                             <td>${sp.toFixed(2)} ر.س</td>
                             <td>${imp.toLocaleString()}</td>
                             <td>${clk.toLocaleString()}</td>
@@ -517,46 +600,43 @@ def home():
                 document.getElementById('googleSpend').innerText = gSpend.toFixed(2) + ' ر.س';
                 document.getElementById('googleConv').innerText = gConv + ' تحويلات';
                 document.getElementById('googleCpc').innerText = 'CPC: ' + (gClicks > 0 ? (gSpend/gClicks).toFixed(2) : '0.00') + ' ر.س';
-                document.getElementById('googleTable').innerHTML = gHtml || '<tr><td colspan="6" style="text-align:center">لا توجد بيانات متاحة لـ Google</td></tr>';
+                document.getElementById('googleTable').innerHTML = gHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات متاحة لـ Google</td></tr>';
 
-                // Total Totals
+                // Totals
                 let totalSp = mSpend + tSpend + gSpend;
                 let totalCv = mConv + tConv + gConv;
                 document.getElementById('totalSpend').innerText = totalSp.toFixed(2) + ' ر.س';
                 document.getElementById('totalConversions').innerText = `إجمالي النتائج والمحادثات: ${totalCv}`;
 
-                // Run Diagnostics AFTER reading and rendering table
-                runDiagnostics(tiktokCampaignsList, allCampaigns);
+                runDiagnostics(allEvaluatedCampaigns);
 
-                // Build Summary for AI
-                currentSummaryText = `تقرير أداء الإعلانات المباشر:\n` +
+                currentSummaryText = `تقرير أداء الإعلانات الشامل:\n` +
                     `- إجمالي الإنفاق: ${totalSp.toFixed(2)} ر.س | إجمالي النتائج: ${totalCv}\n` +
                     `- Meta: إنفاق ${mSpend.toFixed(2)} ر.س | نتائج ${mConv}\n` +
                     `- TikTok: إنفاق ${tSpend.toFixed(2)} ر.س | نتائج ${tConv}\n` +
                     `- Google: إنفاق ${gSpend.toFixed(2)} ر.س | نتائج ${gConv}\n\n` +
-                    `تقييم إعلانات تيك توك المباشرة:\n` +
-                    tiktokCampaignsList.map(t => `• ${t.name}: التقييم (${t.status}) | CTR: ${t.ctr.toFixed(2)}% | CPC: ${t.cpc.toFixed(2)} ر.س | الإنفاق: ${t.spend.toFixed(2)} ر.س`).join('\n');
+                    `تفاصيل تقييم الحملات على المنصات:\n` +
+                    allEvaluatedCampaigns.map(c => `• [${c.platform}] ${c.name}: حالة (${c.status}) | CTR: ${c.ctr.toFixed(2)}% | CPC: ${c.cpc.toFixed(2)} ر.س | الإنفاق: ${c.spend.toFixed(2)} ر.س`).join('\n');
 
                 renderChart(['Meta Ads', 'TikTok Ads', 'Google Ads'], [mSpend, tSpend, gSpend]);
             }
 
-            function runDiagnostics(tiktokList, allCampaigns) {
+            function runDiagnostics(campaigns) {
                 let diagList = document.getElementById('diagList');
                 let items = [];
 
-                // TikTok specific AI Diagnostics
-                let winners = tiktokList.filter(t => t.status === 'ناجح');
-                if (winners.length > 0) {
-                    items.push(`<div class="diag-item diag-green"><i class="fa-solid fa-circle-check"></i> <strong>إعلان تيك توك الناجح:</strong> الإعلان <strong>"${winners[0].name}"</strong> يحقق أعلى نسبة جاذبية (CTR: ${winners[0].ctr.toFixed(2)}%) بتكلفة نقرة ضئيلة (${winners[0].cpc.toFixed(2)} ر.س). يوصى بزيادة ميزانيته.</div>`);
-                }
+                let winners = campaigns.filter(c => c.status === 'ناجح');
+                winners.forEach(w => {
+                    items.push(`<div class="diag-item diag-green"><i class="fa-solid fa-circle-check"></i> <strong>حملة ناجحة [${w.platform}]:</strong> الحملة <strong>"${w.name}"</strong> تحقق أداءً جيداً (الإنفاق: ${w.spend.toFixed(2)} ر.س). يُنصح باستمرارها أو زيادة ميزانيتها.</div>`);
+                });
 
-                let failed = tiktokList.filter(t => t.status === 'فاشل' && t.spend > 10);
-                failed.forEach(t => {
-                    items.push(`<div class="diag-item diag-red"><i class="fa-solid fa-triangle-exclamation"></i> <strong>إعلان تيك توك فاشل/ضعيف:</strong> الإعلان <strong>"${t.name}"</strong> يحقق CTR ضعيف جداً (${t.ctr.toFixed(2)}%). يتطلب إيقافه أو تغيير الفيديو.</div>`);
+                let failed = campaigns.filter(c => c.status === 'فاشل' && c.spend > 10);
+                failed.forEach(f => {
+                    items.push(`<div class="diag-item diag-red"><i class="fa-solid fa-triangle-exclamation"></i> <strong>تنبيه إعلان ضعيف [${f.platform}]:</strong> الحملة <strong>"${f.name}"</strong> تحقق أداءً ضعيفاً موازنة بالإنفاق (${f.spend.toFixed(2)} ر.س). يفضل إيقافها أو تحسين المحتوى.</div>`);
                 });
 
                 if (items.length === 0) {
-                    items.push('<div class="diag-item diag-green"><i class="fa-solid fa-shield-halved"></i> <strong>حالة الإعلانات:</strong> تم جلب البيانات بنجاح، وجميع الإعلانات تعمل ضمن المستويات الطبيعية.</div>');
+                    items.push('<div class="diag-item diag-green"><i class="fa-solid fa-shield-halved"></i> <strong>حالة الإعلانات:</strong> جميع الحملات المكتشفة تعمل بتوازن ومجمل مؤشراتها ضمن النطاق الطبيعي.</div>');
                 }
 
                 diagList.innerHTML = items.join('');
@@ -599,7 +679,13 @@ def home():
                 });
             }
 
-            fetchAndAnalyze();
+            // ابدأ فورًا برسم أي نسخة محفوظة محليًا (بلا أي انتظار شبكة)،
+            // ثم اجلب النسخة الحيّة من السيرفر (سريعة الآن لأنها من كاش خلفي دافئ)
+            const hadLocalCache = loadFromLocalCache();
+            fetchAndAnalyze(!hadLocalCache);
+
+            // تحديث تلقائي كل دقيقتين بصمت (بدون Spinner) طالما الصفحة مفتوحة
+            setInterval(() => fetchAndAnalyze(false), 120000);
         </script>
     </body>
     </html>
