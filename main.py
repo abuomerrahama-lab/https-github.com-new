@@ -45,9 +45,13 @@ async def refresh_cache_and_keep_alive():
     global CACHE
     while True:
         try:
-            logger.info("جاري جلب تحديثات إعلانات المنصات...")
+            logger.info("جاري تحديث بيانات الإعلانات وتجميع النتائج...")
+            
+            # 🔍 جلب جميع حقول نتائج المحادثات والتحويلات الممكنة من Meta
+            meta_fields = "account_name,campaign,clicks,spend,conversions,impressions,cpc,ctr,date,actions,results,inline_post_engagement,onsite_conversion_messaging_conversation_started_7d"
+            
             meta_res, tiktok_res, google_res = await asyncio.gather(
-                fetch_windsor_connector("facebook", {"fields": "account_name,campaign,clicks,spend,conversions,impressions,cpc,ctr,date"}),
+                fetch_windsor_connector("facebook", {"fields": meta_fields}),
                 fetch_windsor_connector("tiktok", {"fields": "account_name,campaign_name,clicks,spend,conversion,impressions,cpc,ctr,date"}),
                 fetch_windsor_connector("google_ads", {"fields": "account_name,campaign,clicks,spend,conversions,impressions,cpc,ctr,date"}),
                 return_exceptions=True
@@ -66,7 +70,7 @@ async def refresh_cache_and_keep_alive():
                 pass
 
         except Exception as e:
-            logger.error(f"Cache refresh error: {e}")
+            logger.error(f"Cache error: {e}")
             
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
@@ -314,6 +318,29 @@ async def serve_index():
                 return isNaN(n) ? 0 : n;
             }
 
+            // 🎯 دالة مرنة لحساب نتائج ومحادثات ميتا المتعددة
+            function parseMetaConversions(item) {
+                if (!item) return 0;
+                let res = safeNum(item.conversions || item.results || item.actions || item.onsite_conversion_messaging_conversation_started_7d);
+                if (res > 0) return res;
+
+                // التفتيش في كائن الأكشنز إذا كان آتياً كمصفوفة أو أوبجكت من Windsor
+                if (item.actions && Array.isArray(item.actions)) {
+                    let totalActions = 0;
+                    item.actions.forEach(act => {
+                        if (act.action_type && (
+                            act.action_type.includes('message') || 
+                            act.action_type.includes('conversation') || 
+                            act.action_type.includes('lead')
+                        )) {
+                            totalActions += safeNum(act.value);
+                        }
+                    });
+                    if (totalActions > 0) return totalActions;
+                }
+                return 0;
+            }
+
             function filterByDate(list) {
                 if (!list || !Array.isArray(list)) return [];
                 const now = new Date();
@@ -381,7 +408,7 @@ async def serve_index():
                 let metaSpend = 0, metaConv = 0;
                 metaList.forEach(i => {
                     metaSpend += safeNum(i.spend || i.cost);
-                    metaConv += safeNum(i.conversions || i.results);
+                    metaConv += parseMetaConversions(i);
                 });
 
                 let tiktokSpend = 0, tiktokConv = 0;
@@ -421,17 +448,20 @@ async def serve_index():
                 const container = document.getElementById('campaigns-tables-container');
                 container.innerHTML = '';
 
-                const buildTableHtml = (title, dotClass, list, convLabel) => {
+                const buildTableHtml = (title, dotClass, list, convLabel, isMeta = false) => {
                     if (list.length === 0) return '';
-                    let rows = list.map(i => `
-                        <tr>
-                            <td>${i.campaign || i.campaign_name || i.account_name || 'حملة عامة'}</td>
-                            <td>${safeNum(i.spend || i.cost).toFixed(2)} ر.س</td>
-                            <td>${safeNum(i.impressions).toLocaleString('ar-SA')}</td>
-                            <td>${safeNum(i.clicks).toLocaleString('ar-SA')}</td>
-                            <td>${safeNum(i.conversions || i.conversion || i.results)}</td>
-                        </tr>
-                    `).join('');
+                    let rows = list.map(i => {
+                        let convCount = isMeta ? parseMetaConversions(i) : safeNum(i.conversions || i.conversion || i.results);
+                        return `
+                            <tr>
+                                <td>${i.campaign || i.campaign_name || i.account_name || 'حملة عامة'}</td>
+                                <td>${safeNum(i.spend || i.cost).toFixed(2)} ر.س</td>
+                                <td>${safeNum(i.impressions).toLocaleString('ar-SA')}</td>
+                                <td>${safeNum(i.clicks).toLocaleString('ar-SA')}</td>
+                                <td>${convCount}</td>
+                            </tr>
+                        `;
+                    }).join('');
 
                     return `
                         <div class="platform-card">
@@ -456,7 +486,7 @@ async def serve_index():
 
                 let html = '';
                 if (currentPlatform === 'all' || currentPlatform === 'meta') {
-                    html += buildTableHtml('Meta Ads', 'dot-meta', metaList, 'المحادثات/النتائج');
+                    html += buildTableHtml('Meta Ads', 'dot-meta', metaList, 'المحادثات/النتائج', true);
                 }
                 if (currentPlatform === 'all' || currentPlatform === 'tiktok') {
                     html += buildTableHtml('TikTok Ads', 'dot-tiktok', tiktokList, 'التحويلات');
