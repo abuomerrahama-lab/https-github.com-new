@@ -45,14 +45,14 @@ async def refresh_cache_and_keep_alive():
     global CACHE
     while True:
         try:
-            logger.info("جاري تحديث بيانات الإعلانات وتجميع النتائج...")
+            logger.info("جاري تحديث البيانات واستجلاب المؤشرات...")
             
-            # 🔍 جلب جميع حقول نتائج المحادثات والتحويلات الممكنة من Meta
             meta_fields = "account_name,campaign,clicks,spend,conversions,impressions,cpc,ctr,date,actions,results,inline_post_engagement,onsite_conversion_messaging_conversation_started_7d"
-            
+            tiktok_fields = "account_name,campaign_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date,cost_per_conversion"
+
             meta_res, tiktok_res, google_res = await asyncio.gather(
                 fetch_windsor_connector("facebook", {"fields": meta_fields}),
-                fetch_windsor_connector("tiktok", {"fields": "account_name,campaign_name,clicks,spend,conversion,impressions,cpc,ctr,date"}),
+                fetch_windsor_connector("tiktok", {"fields": tiktok_fields}),
                 fetch_windsor_connector("google_ads", {"fields": "account_name,campaign,clicks,spend,conversions,impressions,cpc,ctr,date"}),
                 return_exceptions=True
             )
@@ -110,11 +110,11 @@ async def serve_index():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>التقرير اليومي للإعلانات</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
         <style>
             :root {
                 --bg-main: #0b0f17;
                 --bg-card: #151c28;
-                --bg-card-hover: #1b2434;
                 --text-main: #f8fafc;
                 --text-muted: #94a3b8;
                 --accent-gold: #f59e0b;
@@ -201,7 +201,7 @@ async def serve_index():
                 font-size: 15px;
                 margin-bottom: 20px;
             }
-            .chart-wrapper { height: 320px; position: relative; }
+            .chart-wrapper { height: 360px; position: relative; }
 
             .filters-bar {
                 display: flex;
@@ -240,9 +240,7 @@ async def serve_index():
                 align-items: center;
                 border-bottom: 1px solid var(--border-color);
             }
-            .dot {
-                height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-left: 8px;
-            }
+            .dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-left: 8px; }
             .dot-meta { background-color: var(--accent-blue); }
             .dot-tiktok { background-color: var(--accent-pink); }
             .dot-google { background-color: var(--accent-green); }
@@ -250,6 +248,18 @@ async def serve_index():
             table { width: 100%; border-collapse: collapse; text-align: right; font-size: 14px; }
             th, td { padding: 14px 20px; border-bottom: 1px solid var(--border-color); }
             th { color: var(--text-muted); font-weight: 600; background-color: rgba(0,0,0,0.15); }
+
+            .badge {
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: bold;
+                display: inline-block;
+                margin-right: 8px;
+            }
+            .badge-good { background-color: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid #10b981; }
+            .badge-medium { background-color: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid #f59e0b; }
+            .badge-bad { background-color: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid #ef4444; }
         </style>
     </head>
     <body>
@@ -281,7 +291,7 @@ async def serve_index():
             <div class="card">
                 <div class="card-title">TikTok - إجمالي الإنفاق</div>
                 <div class="card-value" id="tiktok-spend">0.00 ر.س</div>
-                <div class="card-sub" id="tiktok-sub">0 تحويل</div>
+                <div class="card-sub" id="tiktok-sub">0 تحويل/نقرة</div>
             </div>
             <div class="card">
                 <div class="card-title">Meta - إجمالي الإنفاق</div>
@@ -291,7 +301,7 @@ async def serve_index():
         </div>
 
         <div class="chart-section">
-            <div class="chart-title" id="chart-period-title">الإنفاق حسب الحساب - أمس</div>
+            <div class="chart-title" id="chart-period-title">الإنفاق حسب الحساب</div>
             <div class="chart-wrapper">
                 <canvas id="spendChart"></canvas>
             </div>
@@ -307,6 +317,8 @@ async def serve_index():
         <div id="campaigns-tables-container"></div>
 
         <script>
+            Chart.register(ChartDataLabels);
+
             let chartInstance = null;
             let currentPlatform = 'all';
             let currentTimeRange = 'yesterday';
@@ -318,27 +330,30 @@ async def serve_index():
                 return isNaN(n) ? 0 : n;
             }
 
-            // 🎯 دالة مرنة لحساب نتائج ومحادثات ميتا المتعددة
             function parseMetaConversions(item) {
                 if (!item) return 0;
                 let res = safeNum(item.conversions || item.results || item.actions || item.onsite_conversion_messaging_conversation_started_7d);
                 if (res > 0) return res;
-
-                // التفتيش في كائن الأكشنز إذا كان آتياً كمصفوفة أو أوبجكت من Windsor
                 if (item.actions && Array.isArray(item.actions)) {
-                    let totalActions = 0;
+                    let total = 0;
                     item.actions.forEach(act => {
-                        if (act.action_type && (
-                            act.action_type.includes('message') || 
-                            act.action_type.includes('conversation') || 
-                            act.action_type.includes('lead')
-                        )) {
-                            totalActions += safeNum(act.value);
+                        if (act.action_type && (act.action_type.includes('message') || act.action_type.includes('conversation') || act.action_type.includes('lead'))) {
+                            total += safeNum(act.value);
                         }
                     });
-                    if (totalActions > 0) return totalActions;
+                    if (total > 0) return total;
                 }
                 return 0;
+            }
+
+            function getLast7DaysDates() {
+                let dates = [];
+                for (let i = 6; i >= 0; i--) {
+                    let d = new Date();
+                    d.setDate(d.getDate() - i);
+                    dates.push(d.toISOString().split('T')[0]);
+                }
+                return dates;
             }
 
             function filterByDate(list) {
@@ -362,25 +377,55 @@ async def serve_index():
                 });
             }
 
-            function initChart(metaSpend, tiktokSpend, googleSpend) {
+            function updateChart(metaList, tiktokList, googleList) {
                 const ctx = document.getElementById('spendChart').getContext('2d');
                 if (chartInstance) chartInstance.destroy();
 
+                let labels = [];
+                let datasets = [];
+
+                if (currentTimeRange === 'last7') {
+                    labels = getLast7DaysDates();
+                    
+                    let metaDaily = labels.map(d => metaList.filter(i => i.date === d).reduce((s, i) => s + safeNum(i.spend || i.cost), 0));
+                    let tiktokDaily = labels.map(d => tiktokList.filter(i => i.date === d).reduce((s, i) => s + safeNum(i.spend || i.cost), 0));
+                    let googleDaily = labels.map(d => googleList.filter(i => i.date === d).reduce((s, i) => s + safeNum(i.spend || i.cost), 0));
+
+                    datasets = [
+                        { label: 'Meta Ads', data: metaDaily, backgroundColor: '#3b82f6', borderRadius: 4 },
+                        { label: 'TikTok Ads', data: tiktokDaily, backgroundColor: '#ec4899', borderRadius: 4 },
+                        { label: 'Google Ads', data: googleDaily, backgroundColor: '#10b981', borderRadius: 4 }
+                    ];
+                } else {
+                    labels = ['Meta Ads', 'TikTok Ads', 'Google Ads'];
+                    let mSpend = metaList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+                    let tSpend = tiktokList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+                    let gSpend = googleList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+
+                    datasets = [{
+                        data: [mSpend, tSpend, gSpend],
+                        backgroundColor: ['#3b82f6', '#ec4899', '#10b981'],
+                        borderRadius: 6,
+                        barThickness: 50
+                    }];
+                }
+
                 chartInstance = new Chart(ctx, {
                     type: 'bar',
-                    data: {
-                        labels: ['Meta Ads', 'TikTok Ads', 'Google Ads'],
-                        datasets: [{
-                            data: [metaSpend, tiktokSpend, googleSpend],
-                            backgroundColor: ['#3b82f6', '#ec4899', '#10b981'],
-                            borderRadius: 6,
-                            barThickness: 50
-                        }]
-                    },
+                    data: { labels: labels, datasets: datasets },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
+                        plugins: {
+                            legend: { display: currentTimeRange === 'last7', labels: { color: '#94a3b8' } },
+                            datalabels: {
+                                anchor: 'end',
+                                align: 'top',
+                                color: '#f8fafc',
+                                font: { weight: 'bold', size: 10 },
+                                formatter: (val) => val > 0 ? val.toFixed(0) + ' ر.س' : ''
+                            }
+                        },
                         scales: {
                             y: { grid: { color: '#232d3f' }, ticks: { color: '#94a3b8' } },
                             x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
@@ -411,10 +456,11 @@ async def serve_index():
                     metaConv += parseMetaConversions(i);
                 });
 
-                let tiktokSpend = 0, tiktokConv = 0;
+                let tiktokSpend = 0, tiktokConv = 0, tiktokClicks = 0;
                 tiktokList.forEach(i => {
                     tiktokSpend += safeNum(i.spend || i.cost);
                     tiktokConv += safeNum(i.conversion || i.conversions);
+                    tiktokClicks += safeNum(i.clicks);
                 });
 
                 let googleSpend = 0, googleConv = 0;
@@ -429,7 +475,7 @@ async def serve_index():
                 document.getElementById('meta-sub').innerText = metaConv + ' محادثة/نتيجة';
 
                 document.getElementById('tiktok-spend').innerText = tiktokSpend.toFixed(2) + ' ر.س';
-                document.getElementById('tiktok-sub').innerText = tiktokConv + ' تحويل';
+                document.getElementById('tiktok-sub').innerText = tiktokConv > 0 ? tiktokConv + ' تحويل' : tiktokClicks + ' نقرة';
 
                 document.getElementById('google-spend').innerText = googleSpend.toFixed(2) + ' ر.س';
                 document.getElementById('google-sub').innerText = googleConv + ' تحويلات';
@@ -440,24 +486,51 @@ async def serve_index():
                 document.getElementById('chart-period-title').innerText = `الإنفاق حسب الحساب - ${timeText}`;
                 document.getElementById('update-time').innerText = `تقرير أداء (${timeText}) - آخر تحديث: ${new Date().toLocaleTimeString('ar-SA')}`;
 
-                initChart(metaSpend, tiktokSpend, googleSpend);
+                updateChart(metaList, tiktokList, googleList);
                 renderTables(metaList, tiktokList, googleList);
+            }
+
+            function getTikTokBadge(spend, conv, clicks, cpc, ctr) {
+                if (conv > 0) {
+                    let cpa = spend / conv;
+                    if (cpa <= 40) return `<span class="badge badge-good">ناجح (CPA: ${cpa.toFixed(1)} ر.س)</span>`;
+                    if (cpa <= 80) return `<span class="badge badge-medium">متوسط (CPA: ${cpa.toFixed(1)} ر.س)</span>`;
+                    return `<span class="badge badge-bad">مرتفع التكلفة (CPA: ${cpa.toFixed(1)} ر.س)</span>`;
+                }
+
+                if (spend === 0) return '<span class="badge badge-medium">غير نشط</span>';
+                if (clicks === 0 && spend > 20) return '<span class="badge badge-bad">ضعيف (بدون نقرات)</span>';
+
+                if (ctr >= 0.8 && cpc <= 3.0) {
+                    return `<span class="badge badge-good">جودة عالية (${clicks} نقرة | CTR: ${ctr.toFixed(2)}%)</span>`;
+                } else if (ctr >= 0.4 || cpc <= 4.0) {
+                    return `<span class="badge badge-medium">أداء متوسط (${clicks} نقرة)</span>`;
+                } else {
+                    return `<span class="badge badge-bad">تكلفة مرتفعة/نقرات قليلة</span>`;
+                }
             }
 
             function renderTables(metaList, tiktokList, googleList) {
                 const container = document.getElementById('campaigns-tables-container');
                 container.innerHTML = '';
 
-                const buildTableHtml = (title, dotClass, list, convLabel, isMeta = false) => {
+                const buildTableHtml = (title, dotClass, list, convLabel, isTikTok = false, isMeta = false) => {
                     if (list.length === 0) return '';
                     let rows = list.map(i => {
+                        let spend = safeNum(i.spend || i.cost);
                         let convCount = isMeta ? parseMetaConversions(i) : safeNum(i.conversions || i.conversion || i.results);
+                        let clicks = safeNum(i.clicks);
+                        let cpc = safeNum(i.cpc);
+                        let ctr = safeNum(i.ctr);
+
+                        let badgeHtml = isTikTok ? getTikTokBadge(spend, convCount, clicks, cpc, ctr) : '';
+
                         return `
                             <tr>
-                                <td>${i.campaign || i.campaign_name || i.account_name || 'حملة عامة'}</td>
-                                <td>${safeNum(i.spend || i.cost).toFixed(2)} ر.س</td>
+                                <td>${i.campaign || i.campaign_name || i.account_name || 'حملة عامة'} ${badgeHtml}</td>
+                                <td>${spend.toFixed(2)} ر.س</td>
                                 <td>${safeNum(i.impressions).toLocaleString('ar-SA')}</td>
-                                <td>${safeNum(i.clicks).toLocaleString('ar-SA')}</td>
+                                <td>${clicks.toLocaleString('ar-SA')}</td>
                                 <td>${convCount}</td>
                             </tr>
                         `;
@@ -486,10 +559,10 @@ async def serve_index():
 
                 let html = '';
                 if (currentPlatform === 'all' || currentPlatform === 'meta') {
-                    html += buildTableHtml('Meta Ads', 'dot-meta', metaList, 'المحادثات/النتائج', true);
+                    html += buildTableHtml('Meta Ads', 'dot-meta', metaList, 'المحادثات/النتائج', false, true);
                 }
                 if (currentPlatform === 'all' || currentPlatform === 'tiktok') {
-                    html += buildTableHtml('TikTok Ads', 'dot-tiktok', tiktokList, 'التحويلات');
+                    html += buildTableHtml('TikTok Ads', 'dot-tiktok', tiktokList, 'التحويلات/المؤشرات', true, false);
                 }
                 if (currentPlatform === 'all' || currentPlatform === 'google') {
                     html += buildTableHtml('Google Ads', 'dot-google', googleList, 'التحويلات');
