@@ -14,7 +14,7 @@ TIKTOK_ACCOUNTS = "7477300225556824081,7438927058295996417"
 # الذاكرة المؤقتة للسرعة الفائقة
 CACHE_DATA = None
 LAST_FETCH_TIME = 0
-CACHE_DURATION = 600  # التخزين لمدة 10 دقائق (600 ثانية)
+CACHE_DURATION = 300  # التخزين لمدة 5 دقائق
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,17 +45,16 @@ async def get_data():
     if not WINDSOR_API_KEY:
         return {"error": "WINDSOR_API_KEY غير معرف"}
     
-    # 1. إرجاع البيانات فوراً إذا كانت مخزنة ومحدثة خلال آخر 10 دقائق
     now = time.time()
     if CACHE_DATA and (now - LAST_FETCH_TIME < CACHE_DURATION):
         return CACHE_DATA
 
     meta_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,actions&date_preset=last_7d&account_id={META_ACCOUNTS}"
-    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_7d&account_id={TIKTOK_ACCOUNTS}"
+    # إضافة ctr صراحة في حقول تيك توك
+    tiktok_params = f"&fields=date,campaign_name,clicks,impressions,spend,conversions,ctr,cpc&date_preset=last_7d&account_id={TIKTOK_ACCOUNTS}"
     google_params = "&fields=date,campaign_name,clicks,impressions,spend,conversions&date_preset=last_7d"
 
-    # 2. التوازي الكامل في طلب البيانات (Parallel Fetching) لسرعة استجابة فائقة
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         meta_req = client.get(f"https://connectors.windsor.ai/facebook?api_key={WINDSOR_API_KEY}{meta_params}")
         tiktok_req = client.get(f"https://connectors.windsor.ai/tiktok?api_key={WINDSOR_API_KEY}{tiktok_params}")
         google_req = client.get(f"https://connectors.windsor.ai/google_ads?api_key={WINDSOR_API_KEY}{google_params}")
@@ -82,7 +81,7 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>لوحة الأداء الذكية للإعلانات | Smart Ads Dashboard</title>
+        <title>لوحة التحليلات المتقدمة للإعلانات</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
         <style>
@@ -109,7 +108,6 @@ def home():
             }
             .container { max-width: 1300px; margin: 0 auto; }
             
-            /* Header */
             .header-bar {
                 display: flex;
                 justify-content: space-between;
@@ -140,11 +138,8 @@ def home():
             }
             .btn:hover { background: var(--bg-card-hover); border-color: var(--accent-blue); }
             .btn-accent { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; border: none; }
-            .btn-accent:hover { opacity: 0.9; }
             .btn-copy { background: linear-gradient(135deg, #10b981, #047857); color: #fff; border: none; }
-            .btn-copy:hover { opacity: 0.9; }
 
-            /* Time Filters */
             .time-selector {
                 display: flex;
                 background: var(--bg-main);
@@ -164,7 +159,6 @@ def home():
             }
             .time-btn.active { background: var(--border-color); color: #fff; }
 
-            /* Top KPI Cards */
             .kpi-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -176,20 +170,18 @@ def home():
                 border: 1px solid var(--border-color);
                 border-radius: 12px;
                 padding: 20px;
-                position: relative;
                 transition: transform 0.2s;
             }
-            .kpi-card:hover { transform: translateY(-2px); }
             .kpi-card.highlight { border-color: var(--accent-gold); background: linear-gradient(180deg, rgba(245,158,11,0.05) 0%, var(--bg-card) 100%); }
             .kpi-card .label { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
             .kpi-card .val { font-size: 26px; font-weight: 800; color: #fff; }
             .kpi-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 8px; }
-            .kpi-card .badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; }
-            .badge-blue { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
-            .badge-pink { background: rgba(236,72,153,0.15); color: var(--accent-pink); }
-            .badge-green { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+            
+            .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+            .badge-success { background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+            .badge-warning { background: rgba(245,158,11,0.2); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+            .badge-danger { background: rgba(239,68,68,0.2); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
 
-            /* Smart Diagnostics Box */
             .diag-box {
                 background: var(--bg-card);
                 border: 1px solid var(--border-color);
@@ -199,19 +191,11 @@ def home():
             }
             .diag-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; color: var(--accent-gold); }
             .diag-list { display: flex; flex-direction: column; gap: 10px; }
-            .diag-item {
-                padding: 12px 16px;
-                border-radius: 8px;
-                font-size: 13px;
-                display: flex;
-                align-items: center;
-                gap: 12px;
-            }
+            .diag-item { padding: 12px 16px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 12px; }
             .diag-red { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; }
             .diag-green { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); color: #6ee7b7; }
             .diag-yellow { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25); color: #fde047; }
 
-            /* Chart Card */
             .chart-card {
                 background: var(--bg-card);
                 border: 1px solid var(--border-color);
@@ -221,7 +205,6 @@ def home():
             }
             .chart-title { font-size: 15px; font-weight: 700; text-align: center; margin-bottom: 20px; color: var(--text-muted); }
 
-            /* Tables Section */
             .section-card {
                 background: var(--bg-card);
                 border: 1px solid var(--border-color);
@@ -229,12 +212,7 @@ def home():
                 padding: 24px;
                 margin-bottom: 24px;
             }
-            .section-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 20px;
-            }
+            .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
             .section-header h3 { margin: 0; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
             .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
             .dot-meta { background: var(--accent-blue); }
@@ -265,59 +243,80 @@ def home():
     </head>
     <body>
         <div class="container">
-            <!-- Header -->
             <div class="header-bar">
                 <div class="header-title">
                     <h1><i class="fa-solid fa-chart-pie" style="color: var(--accent-gold); margin-left:8px;"></i> لوحة تحليلات الإعلانات المتقدمة</h1>
-                    <p id="updateTime">جاري تحميل البيانات...</p>
+                    <p id="updateTime">جاري قراءة البيانات المباشرة...</p>
                 </div>
                 <div class="actions-group">
                     <div class="time-selector">
-                        <button class="time-btn" onclick="setTimeRange('today')">اليوم</button>
-                        <button class="time-btn active" onclick="setTimeRange('yesterday')">أمس</button>
-                        <button class="time-btn" onclick="setTimeRange('last7')">آخر 7 أيام</button>
+                        <button class="time-btn" onclick="setTimeRange('all')">كل البيانات المسحوبة</button>
+                        <button class="time-btn active" onclick="setTimeRange('last7')">آخر 7 أيام</button>
                     </div>
                     <button class="btn btn-accent" onclick="fetchAndAnalyze()"><i class="fa-solid fa-rotate"></i> تحديث</button>
                     <button class="btn btn-copy" onclick="copyDataForAI()"><i class="fa-solid fa-copy"></i> نسخ التقرير للذكاء الاصطناعي</button>
                 </div>
             </div>
 
-            <!-- Top KPIs -->
+            <!-- KPIs -->
             <div class="kpi-grid">
                 <div class="kpi-card">
                     <div class="label"><span>Meta Ads</span> <i class="fa-brands fa-meta" style="color: var(--accent-blue);"></i></div>
                     <div class="val" id="metaSpend">0.00 ر.س</div>
-                    <div class="sub"><span class="badge badge-blue" id="metaConv">0 محادثة</span> <span id="metaCpc">CPC: 0.00</span></div>
+                    <div class="sub"><span id="metaConv">0 محادثة</span> | <span id="metaCpc">CPC: 0.00</span></div>
                 </div>
                 <div class="kpi-card">
                     <div class="label"><span>TikTok Ads</span> <i class="fa-brands fa-tiktok" style="color: var(--accent-pink);"></i></div>
                     <div class="val" id="tiktokSpend">0.00 ر.س</div>
-                    <div class="sub"><span class="badge badge-pink" id="tiktokConv">0 تحويل</span> <span id="tiktokCpc">CPC: 0.00</span></div>
+                    <div class="sub"><span id="tiktokConv">0 تحويل</span> | <span id="tiktokCpc">CPC: 0.00</span></div>
                 </div>
                 <div class="kpi-card">
                     <div class="label"><span>Google Ads</span> <i class="fa-brands fa-google" style="color: var(--accent-green);"></i></div>
                     <div class="val" id="googleSpend">0.00 ر.س</div>
-                    <div class="sub"><span class="badge badge-green" id="googleConv">0 تحويلات</span> <span id="googleCpc">CPC: 0.00</span></div>
+                    <div class="sub"><span id="googleConv">0 تحويلات</span> | <span id="googleCpc">CPC: 0.00</span></div>
                 </div>
                 <div class="kpi-card highlight">
                     <div class="label"><span>إجمالي الإنفاق الكلي</span> <i class="fa-solid fa-wallet" style="color: var(--accent-gold);"></i></div>
                     <div class="val" id="totalSpend">0.00 ر.س</div>
-                    <div class="sub"><span id="totalConversions">النتائج الإجمالية: 0</span></div>
+                    <div class="sub"><span id="totalConversions">إجمالي النتائج: 0</span></div>
                 </div>
+            </div>
+
+            <!-- TikTok Section -->
+            <div class="section-card">
+                <div class="section-header">
+                    <h3><span class="dot dot-tiktok"></span> TikTok Ads - تقييم نجاح الإعلانات حسب الجاذبية (CTR & CPC)</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>الإعلان / الحملة</th>
+                            <th>التقييم الذكي</th>
+                            <th>الإنفاق</th>
+                            <th>الظهور</th>
+                            <th>النقرات</th>
+                            <th>معدل النقر (CTR)</th>
+                            <th>تكلفة النقرة (CPC)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tiktokTable">
+                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري قراءة البيانات...</td></tr>
+                    </tbody>
+                </table>
             </div>
 
             <!-- Smart Diagnostics Box -->
             <div class="diag-box">
                 <div class="diag-title"><i class="fa-solid fa-lightbulb"></i> التحليل البرمجي التلقائي للحملات</div>
                 <div class="diag-list" id="diagList">
-                    <div class="diag-item diag-yellow"><i class="fa-solid fa-spinner fa-spin"></i> جاري فحص البيانات واستخراج التوصيات...</div>
+                    <div class="diag-item diag-yellow"><i class="fa-solid fa-spinner fa-spin"></i> جاري إكمال قراءة البيانات لبدء التحليل...</div>
                 </div>
             </div>
 
             <!-- Chart -->
             <div class="chart-card">
                 <div class="chart-title">مقارنة الإنفاق والنتائج حسب المنصة</div>
-                <div style="height: 280px;">
+                <div style="height: 250px;">
                     <canvas id="spendChart"></canvas>
                 </div>
             </div>
@@ -336,34 +335,10 @@ def home():
                             <th>النقرات</th>
                             <th>CPC</th>
                             <th>المحادثات / الرسائل</th>
-                            <th>تكلفة الرسالة (CPA)</th>
                         </tr>
                     </thead>
                     <tbody id="metaTable">
-                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- TikTok Section -->
-            <div class="section-card">
-                <div class="section-header">
-                    <h3><span class="dot dot-tiktok"></span> TikTok Ads</h3>
-                </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>الحملة</th>
-                            <th>الإنفاق</th>
-                            <th>الظهور</th>
-                            <th>النقرات</th>
-                            <th>CPC</th>
-                            <th>التحويلات</th>
-                            <th>تكلفة التحويل</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tiktokTable">
-                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
+                        <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -382,21 +357,20 @@ def home():
                             <th>النقرات</th>
                             <th>CPC</th>
                             <th>التحويلات</th>
-                            <th>تكلفة التحويل</th>
                         </tr>
                     </thead>
                     <tbody id="googleTable">
-                        <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">جاري التحميل...</td></tr>
+                        <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">جاري القراءة...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
-        <div class="toast" id="toast">✅ تم نسخ تقرير الإعلانات إلى الحافظة بنجاح!</div>
+        <div class="toast" id="toast">✅ تم نسخ التقرير الحافظة بنجاح!</div>
 
         <script>
             let rawDataCache = null;
-            let currentRange = 'yesterday';
+            let currentRange = 'last7';
             let myChart = null;
             let currentSummaryText = "";
 
@@ -407,30 +381,15 @@ def home():
                 if (rawDataCache) renderData(rawDataCache);
             }
 
-            function getDateList(range) {
-                let dates = [];
-                let now = new Date();
-                if (range === 'today') {
-                    dates.push(now.toISOString().split('T')[0]);
-                } else if (range === 'yesterday') {
-                    let y = new Date(now); y.setDate(now.getDate() - 1);
-                    dates.push(y.toISOString().split('T')[0]);
-                } else if (range === 'last7') {
-                    for (let i = 1; i <= 7; i++) {
-                        let d = new Date(now); d.setDate(now.getDate() - i);
-                        dates.push(d.toISOString().split('T')[0]);
-                    }
-                }
-                return dates;
-            }
-
             async function fetchAndAnalyze() {
                 try {
+                    document.getElementById('updateTime').innerText = "جاري الاتصال بـ Windsor.ai لقراءة البيانات...";
                     let res = await fetch('/api/data');
                     rawDataCache = await res.json();
                     renderData(rawDataCache);
                 } catch(e) {
                     console.error(e);
+                    document.getElementById('updateTime').innerText = "حدث خطأ في جلب البيانات، يرجى تحديث الصفحة.";
                 }
             }
 
@@ -448,161 +407,156 @@ def home():
             }
 
             function renderData(data) {
-                let targetDates = getDateList(currentRange);
-                document.getElementById('updateTime').innerText = `النطاق المحدد: ${targetDates.length === 1 ? targetDates[0] : 'آخر 7 أيام'} - آخر تحديث: ${new Date().toLocaleTimeString('ar-SA')}`;
+                document.getElementById('updateTime').innerText = `تم تحديث البيانات المباشرة بنجاح: ${new Date().toLocaleTimeString('ar-SA')}`;
 
                 let mSpend = 0, mConv = 0, mClicks = 0;
                 let tSpend = 0, tConv = 0, tClicks = 0;
                 let gSpend = 0, gConv = 0, gClicks = 0;
 
+                let tiktokCampaignsList = [];
                 let allCampaigns = [];
 
-                // Meta
-                let mHtml = '';
-                if (data.meta_ads && data.meta_ads.data) {
-                    let rows = data.meta_ads.data.filter(r => targetDates.includes(r.date) && (r.spend > 0 || r.clicks > 0));
-                    rows.forEach(r => {
-                        let sp = parseFloat(r.spend || 0);
-                        let clk = parseInt(r.clicks || 0);
-                        let cv = extractMetaConversations(r);
-                        mSpend += sp; mConv += cv; mClicks += clk;
-                        
-                        let cpc = clk > 0 ? (sp / clk) : 0;
-                        let cpa = cv > 0 ? (sp / cv) : 0;
-
-                        allCampaigns.push({ platform: 'Meta', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc, cpa: cpa });
-
-                        mHtml += `<tr>
-                            <td><strong>${r.campaign_name}</strong></td>
-                            <td>${sp.toFixed(2)} ر.س</td>
-                            <td>${Number(r.impressions||0).toLocaleString()}</td>
-                            <td>${clk.toLocaleString()}</td>
-                            <td>${cpc.toFixed(2)} ر.س</td>
-                            <td class="text-green">${cv}</td>
-                            <td class="text-gold">${cpa === 0 ? '-' : cpa.toFixed(2) + ' ر.س'}</td>
-                        </tr>`;
-                    });
-                }
-                document.getElementById('metaSpend').innerText = mSpend.toFixed(2) + ' ر.س';
-                document.getElementById('metaConv').innerText = mConv + ' محادثة / رسالة';
-                document.getElementById('metaCpc').innerText = 'CPC: ' + (mClicks > 0 ? (mSpend/mClicks).toFixed(2) : '0.00') + ' ر.س';
-                document.getElementById('metaTable').innerHTML = mHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات للفترة المحددة</td></tr>';
-
-                // TikTok
+                // 1. TikTok Data Processing & Smart Evaluation Badge
                 let tHtml = '';
-                if (data.tiktok_ads && data.tiktok_ads.data) {
-                    let rows = data.tiktok_ads.data.filter(r => targetDates.includes(r.date) && (r.spend > 0 || r.clicks > 0));
+                if (data.tiktok_ads && data.tiktok_ads.data && data.tiktok_ads.data.length > 0) {
+                    let rows = data.tiktok_ads.data;
                     rows.forEach(r => {
                         let sp = parseFloat(r.spend || 0);
                         let clk = parseInt(r.clicks || 0);
+                        let imp = parseInt(r.impressions || 0);
                         let cv = parseFloat(r.conversions || 0);
+                        let ctr = r.ctr ? (parseFloat(r.ctr) * (parseFloat(r.ctr) < 1 ? 100 : 1)) : (imp > 0 ? (clk / imp) * 100 : 0);
+                        let cpc = clk > 0 ? (sp / clk) : (parseFloat(r.cpc || 0));
+
                         tSpend += sp; tConv += cv; tClicks += clk;
 
-                        let cpc = clk > 0 ? (sp / clk) : 0;
-                        let cpa = cv > 0 ? (sp / cv) : 0;
+                        // Evaluation Logic based on CTR & CPC
+                        let badgeHtml = '';
+                        let statusText = '';
+                        if (ctr >= 1.0 && (cpc <= 1.5 || cpc === 0)) {
+                            badgeHtml = '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> ناجح ممتاز</span>';
+                            statusText = 'ناجح';
+                        } else if (ctr >= 0.6) {
+                            badgeHtml = '<span class="badge badge-warning"><i class="fa-solid fa-triangle-exclamation"></i> متوسط الجاذبية</span>';
+                            statusText = 'متوسط';
+                        } else {
+                            badgeHtml = '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> ضعيف / فاشل</span>';
+                            statusText = 'فاشل';
+                        }
 
-                        allCampaigns.push({ platform: 'TikTok', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc, cpa: cpa });
+                        tiktokCampaignsList.push({ name: r.campaign_name, spend: sp, clicks: clk, ctr: ctr, cpc: cpc, status: statusText });
+                        allCampaigns.push({ platform: 'TikTok', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
 
                         tHtml += `<tr>
-                            <td><strong>${r.campaign_name}</strong></td>
+                            <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
+                            <td>${badgeHtml}</td>
                             <td>${sp.toFixed(2)} ر.س</td>
-                            <td>${Number(r.impressions||0).toLocaleString()}</td>
+                            <td>${imp.toLocaleString()}</td>
                             <td>${clk.toLocaleString()}</td>
+                            <td class="${ctr >= 1.0 ? 'text-green' : ''}">${ctr.toFixed(2)}%</td>
                             <td>${cpc.toFixed(2)} ر.س</td>
-                            <td class="text-green">${cv}</td>
-                            <td class="text-gold">${cpa === 0 ? '-' : cpa.toFixed(2) + ' ر.س'}</td>
                         </tr>`;
                     });
                 }
                 document.getElementById('tiktokSpend').innerText = tSpend.toFixed(2) + ' ر.س';
                 document.getElementById('tiktokConv').innerText = tConv + ' تحويل';
                 document.getElementById('tiktokCpc').innerText = 'CPC: ' + (tClicks > 0 ? (tSpend/tClicks).toFixed(2) : '0.00') + ' ر.س';
-                document.getElementById('tiktokTable').innerHTML = tHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات للفترة المحددة</td></tr>';
+                document.getElementById('tiktokTable').innerHTML = tHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات متاحة لـ TikTok</td></tr>';
 
-                // Google
-                let gHtml = '';
-                if (data.google_ads && data.google_ads.data) {
-                    let rows = data.google_ads.data.filter(r => targetDates.includes(r.date) && (r.spend > 0 || r.clicks > 0));
-                    rows.forEach(r => {
+                // 2. Meta Data
+                let mHtml = '';
+                if (data.meta_ads && data.meta_ads.data && data.meta_ads.data.length > 0) {
+                    data.meta_ads.data.forEach(r => {
                         let sp = parseFloat(r.spend || 0);
                         let clk = parseInt(r.clicks || 0);
-                        let cv = parseFloat(r.conversions || 0);
-                        gSpend += sp; gConv += cv; gClicks += clk;
-
+                        let imp = parseInt(r.impressions || 0);
+                        let cv = extractMetaConversations(r);
+                        mSpend += sp; mConv += cv; mClicks += clk;
                         let cpc = clk > 0 ? (sp / clk) : 0;
-                        let cpa = cv > 0 ? (sp / cv) : 0;
 
-                        allCampaigns.push({ platform: 'Google', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc, cpa: cpa });
+                        allCampaigns.push({ platform: 'Meta', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
 
-                        gHtml += `<tr>
-                            <td><strong>${r.campaign_name}</strong></td>
+                        mHtml += `<tr>
+                            <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
                             <td>${sp.toFixed(2)} ر.س</td>
-                            <td>${Number(r.impressions||0).toLocaleString()}</td>
+                            <td>${imp.toLocaleString()}</td>
                             <td>${clk.toLocaleString()}</td>
                             <td>${cpc.toFixed(2)} ر.س</td>
                             <td class="text-green">${cv}</td>
-                            <td class="text-gold">${cpa === 0 ? '-' : cpa.toFixed(2) + ' ر.س'}</td>
+                        </tr>`;
+                    });
+                }
+                document.getElementById('metaSpend').innerText = mSpend.toFixed(2) + ' ر.س';
+                document.getElementById('metaConv').innerText = mConv + ' محادثة';
+                document.getElementById('metaCpc').innerText = 'CPC: ' + (mClicks > 0 ? (mSpend/mClicks).toFixed(2) : '0.00') + ' ر.س';
+                document.getElementById('metaTable').innerHTML = mHtml || '<tr><td colspan="6" style="text-align:center">لا توجد بيانات متاحة لـ Meta</td></tr>';
+
+                // 3. Google Data
+                let gHtml = '';
+                if (data.google_ads && data.google_ads.data && data.google_ads.data.length > 0) {
+                    data.google_ads.data.forEach(r => {
+                        let sp = parseFloat(r.spend || 0);
+                        let clk = parseInt(r.clicks || 0);
+                        let imp = parseInt(r.impressions || 0);
+                        let cv = parseFloat(r.conversions || 0);
+                        gSpend += sp; gConv += cv; gClicks += clk;
+                        let cpc = clk > 0 ? (sp / clk) : 0;
+
+                        allCampaigns.push({ platform: 'Google', name: r.campaign_name, spend: sp, clicks: clk, conv: cv, cpc: cpc });
+
+                        gHtml += `<tr>
+                            <td><strong>${r.campaign_name || 'حملة بدون اسم'}</strong></td>
+                            <td>${sp.toFixed(2)} ر.س</td>
+                            <td>${imp.toLocaleString()}</td>
+                            <td>${clk.toLocaleString()}</td>
+                            <td>${cpc.toFixed(2)} ر.س</td>
+                            <td class="text-green">${cv}</td>
                         </tr>`;
                     });
                 }
                 document.getElementById('googleSpend').innerText = gSpend.toFixed(2) + ' ر.س';
                 document.getElementById('googleConv').innerText = gConv + ' تحويلات';
                 document.getElementById('googleCpc').innerText = 'CPC: ' + (gClicks > 0 ? (gSpend/gClicks).toFixed(2) : '0.00') + ' ر.س';
-                document.getElementById('googleTable').innerHTML = gHtml || '<tr><td colspan="7" style="text-align:center">لا توجد بيانات للفترة المحددة</td></tr>';
+                document.getElementById('googleTable').innerHTML = gHtml || '<tr><td colspan="6" style="text-align:center">لا توجد بيانات متاحة لـ Google</td></tr>';
 
-                // Total
+                // Total Totals
                 let totalSp = mSpend + tSpend + gSpend;
                 let totalCv = mConv + tConv + gConv;
                 document.getElementById('totalSpend').innerText = totalSp.toFixed(2) + ' ر.س';
-                document.getElementById('totalConversions').innerText = `إجمالي التحويلات والمحادثات: ${totalCv}`;
+                document.getElementById('totalConversions').innerText = `إجمالي النتائج والمحادثات: ${totalCv}`;
 
-                // Run Rule-Based Diagnostics
-                runDiagnostics(allCampaigns);
+                // Run Diagnostics AFTER reading and rendering table
+                runDiagnostics(tiktokCampaignsList, allCampaigns);
 
-                // Build Summary text for copying
-                currentSummaryText = `تقرير أداء الإعلانات للفترة (${targetDates.length === 1 ? targetDates[0] : 'آخر 7 أيام'}):\n` +
-                    `- إجمالي الإنفاق: ${totalSp.toFixed(2)} ر.س\n` +
-                    `- إجمالي النتائج: ${totalCv}\n` +
+                // Build Summary for AI
+                currentSummaryText = `تقرير أداء الإعلانات المباشر:\n` +
+                    `- إجمالي الإنفاق: ${totalSp.toFixed(2)} ر.س | إجمالي النتائج: ${totalCv}\n` +
                     `- Meta: إنفاق ${mSpend.toFixed(2)} ر.س | نتائج ${mConv}\n` +
                     `- TikTok: إنفاق ${tSpend.toFixed(2)} ر.س | نتائج ${tConv}\n` +
                     `- Google: إنفاق ${gSpend.toFixed(2)} ر.س | نتائج ${gConv}\n\n` +
-                    `تفاصيل الحملات النشطة:\n` +
-                    allCampaigns.map(c => `• [${c.platform}] ${c.name}: إنفاق ${c.spend.toFixed(2)} ر.س، نقرات ${c.clicks} (CPC: ${c.cpc.toFixed(2)}ر.س)، نتائج ${c.conv} (CPA: ${c.cpa === 0 ? '-' : c.cpa.toFixed(2) + 'ر.س'})`).join('\n') +
-                    `\n\nالمطلوب: قم بتزويدي بتحليل استراتيجي وتوصيات لتطوير الأداء وتوزيع الميزانية بشكل أفضل.`;
+                    `تقييم إعلانات تيك توك المباشرة:\n` +
+                    tiktokCampaignsList.map(t => `• ${t.name}: التقييم (${t.status}) | CTR: ${t.ctr.toFixed(2)}% | CPC: ${t.cpc.toFixed(2)} ر.س | الإنفاق: ${t.spend.toFixed(2)} ر.س`).join('\n');
 
                 renderChart(['Meta Ads', 'TikTok Ads', 'Google Ads'], [mSpend, tSpend, gSpend]);
             }
 
-            function runDiagnostics(campaigns) {
+            function runDiagnostics(tiktokList, allCampaigns) {
                 let diagList = document.getElementById('diagList');
                 let items = [];
 
-                if (campaigns.length === 0) {
-                    diagList.innerHTML = '<div class="diag-item diag-yellow"><i class="fa-solid fa-info-circle"></i> لا توجد حملات نشطة للفترة المحددة ليتم تحليلها.</div>';
-                    return;
+                // TikTok specific AI Diagnostics
+                let winners = tiktokList.filter(t => t.status === 'ناجح');
+                if (winners.length > 0) {
+                    items.push(`<div class="diag-item diag-green"><i class="fa-solid fa-circle-check"></i> <strong>إعلان تيك توك الناجح:</strong> الإعلان <strong>"${winners[0].name}"</strong> يحقق أعلى نسبة جاذبية (CTR: ${winners[0].ctr.toFixed(2)}%) بتكلفة نقرة ضئيلة (${winners[0].cpc.toFixed(2)} ر.س). يوصى بزيادة ميزانيته.</div>`);
                 }
 
-                // Rule 1: Wasted spend
-                let wasted = campaigns.filter(c => c.spend > 100 && c.conv === 0);
-                wasted.forEach(c => {
-                    items.push(`<div class="diag-item diag-red"><i class="fa-solid fa-triangle-exclamation"></i> <strong>تنبيه إهدار [${c.platform}]:</strong> الحملة <strong>"${c.name}"</strong> أنفقت ${c.spend.toFixed(2)} ر.س بدون تحقيق أي نتيجة. يُنصح بتعديل الاستهداف أو إيقافها.</div>`);
-                });
-
-                // Rule 2: High efficiency
-                let winning = campaigns.filter(c => c.conv > 0).sort((a,b) => a.cpa - b.cpa);
-                if (winning.length > 0) {
-                    let best = winning[0];
-                    items.push(`<div class="diag-item diag-green"><i class="fa-solid fa-circle-check"></i> <strong>حملة متميزة [${best.platform}]:</strong> الحملة <strong>"${best.name}"</strong> حققت أفضل تكلفة نتيجة بـ (${best.cpa.toFixed(2)} ر.س/نتيجة). فرصة لزيادة الميزانية بها.</div>`);
-                }
-
-                // Rule 3: High CPC
-                let highCpc = campaigns.filter(c => c.clicks > 10 && c.cpc > 2.50);
-                highCpc.forEach(c => {
-                    items.push(`<div class="diag-item diag-yellow"><i class="fa-solid fa-triangle-exclamation"></i> <strong>ارتفاع تكلفة النقرة [${c.platform}]:</strong> الحملة <strong>"${c.name}"</strong> سجلت CPC مرتفع بـ (${c.cpc.toFixed(2)} ر.س). يرجى مراجعة جودة الإعلان والمحتوى.</div>`);
+                let failed = tiktokList.filter(t => t.status === 'فاشل' && t.spend > 10);
+                failed.forEach(t => {
+                    items.push(`<div class="diag-item diag-red"><i class="fa-solid fa-triangle-exclamation"></i> <strong>إعلان تيك توك فاشل/ضعيف:</strong> الإعلان <strong>"${t.name}"</strong> يحقق CTR ضعيف جداً (${t.ctr.toFixed(2)}%). يتطلب إيقافه أو تغيير الفيديو.</div>`);
                 });
 
                 if (items.length === 0) {
-                    items.push('<div class="diag-item diag-green"><i class="fa-solid fa-shield-halved"></i> <strong>الأداء مستقر:</strong> جميع الحملات تعمل ضمن معدلات كفاءة متوازنة ولاتوجد أي تنبيهات حرجة اليوم.</div>');
+                    items.push('<div class="diag-item diag-green"><i class="fa-solid fa-shield-halved"></i> <strong>حالة الإعلانات:</strong> تم جلب البيانات بنجاح، وجميع الإعلانات تعمل ضمن المستويات الطبيعية.</div>');
                 }
 
                 diagList.innerHTML = items.join('');
@@ -621,7 +575,7 @@ def home():
                             data: spendData,
                             backgroundColor: ['#3b82f6', '#ec4899', '#10b981'],
                             borderRadius: 8,
-                            barThickness: 40
+                            barThickness: 36
                         }]
                     },
                     options: {
