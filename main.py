@@ -24,6 +24,14 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 REFRESH_INTERVAL_SECONDS = 90
 DEFAULT_LOOKBACK_DAYS = 30
 
+# حقول أساسية ومضمونة الدعم في موصلات Windsor.ai (مرجع واحد يُستخدم في
+# حلقة التحديث ونقطة التشخيص معاً لتفادي أي تعارض بين المكانين)
+CONNECTOR_FIELDS = {
+    "facebook": "account_name,campaign,adset_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date,actions",
+    "tiktok": "account_name,campaign_name,adgroup_name,ad_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date",
+    "google_ads": "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date",
+}
+
 
 def get_default_date_range(days: int = DEFAULT_LOOKBACK_DAYS):
     """يحسب نطاق تاريخ افتراضي (date_from / date_to) بصيغة YYYY-MM-DD.
@@ -108,17 +116,10 @@ async def refresh_cache_and_keep_alive():
             date_from, date_to = get_default_date_range()
             logger.info(f"جاري تحديث بيانات إعلانات elevenz... (النطاق الزمني: {date_from} إلى {date_to})")
 
-            # حقول أساسية ومضمونة الدعم في موصلات Windsor.ai
-            # (تم تجنب حقول غير موثقة بشكل مضمون مثل onsite_conversion_messaging_conversation_started_7d
-            # أو cost_per_conversion أو all_conversions، والتي قد تتسبب في استجابة فارغة أو خطأ من الموصل)
-            meta_fields = "account_name,campaign,adset_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date,actions"
-            tiktok_fields = "account_name,campaign_name,adgroup_name,ad_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date"
-            google_fields = "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date"
-
             meta_res, tiktok_res, google_res = await asyncio.gather(
-                fetch_windsor_connector("facebook", {"fields": meta_fields}),
-                fetch_windsor_connector("tiktok", {"fields": tiktok_fields}),
-                fetch_windsor_connector("google_ads", {"fields": google_fields}),
+                fetch_windsor_connector("facebook", {"fields": CONNECTOR_FIELDS["facebook"]}),
+                fetch_windsor_connector("tiktok", {"fields": CONNECTOR_FIELDS["tiktok"]}),
+                fetch_windsor_connector("google_ads", {"fields": CONNECTOR_FIELDS["google_ads"]}),
                 return_exceptions=True
             )
 
@@ -152,6 +153,75 @@ async def startup_event():
 @app.get("/api/status")
 async def get_status():
     return {"status": "ok"}
+
+@app.get("/api/debug/windsor")
+async def debug_windsor(connector: str = "facebook"):
+    """نقطة تشخيص: تنفّذ نفس طلب Windsor.ai المستخدم في التحديث التلقائي
+    وتُرجع الاستجابة الخام (رمز الحالة + نص الاستجابة) دون الحاجة لقراءة
+    سجلات (Logs) Render. افتح مباشرة في المتصفح:
+    /api/debug/windsor?connector=facebook
+    /api/debug/windsor?connector=tiktok
+    /api/debug/windsor?connector=google_ads
+    مفتاح الـ API لا يظهر أبداً في الاستجابة."""
+    if connector not in CONNECTOR_FIELDS:
+        return JSONResponse(content={
+            "error": f"موصل غير معروف: '{connector}'",
+            "supported_connectors": list(CONNECTOR_FIELDS.keys())
+        }, status_code=400)
+
+    if not WINDSOR_API_KEY:
+        return JSONResponse(content={
+            "error": "WINDSOR_API_KEY غير مضبوط في متغيرات البيئة (Environment Variables) على Render. "
+                     "أضِفه من إعدادات الخدمة (Environment) ثم أعد النشر."
+        })
+
+    fields = CONNECTOR_FIELDS[connector]
+    date_from, date_to = get_default_date_range()
+    url = f"https://connectors.windsor.ai/{connector}"
+    params = {
+        "api_key": WINDSOR_API_KEY,
+        "_renderer": "json",
+        "date_from": date_from,
+        "date_to": date_to,
+        "fields": fields,
+    }
+    masked_url = (
+        f"{url}?api_key=***&_renderer=json&date_from={date_from}"
+        f"&date_to={date_to}&fields={fields}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.get(url, params=params)
+
+        try:
+            parsed = res.json()
+        except Exception:
+            parsed = None
+
+        row_count = None
+        if isinstance(parsed, dict) and isinstance(parsed.get("data"), list):
+            row_count = len(parsed["data"])
+        elif isinstance(parsed, list):
+            row_count = len(parsed)
+
+        return JSONResponse(content={
+            "connector": connector,
+            "request_url_masked": masked_url,
+            "status_code": res.status_code,
+            "date_from": date_from,
+            "date_to": date_to,
+            "fields_requested": fields,
+            "row_count": row_count,
+            "parsed_json": parsed,
+            "raw_body_preview": res.text[:3000],
+        })
+    except Exception as e:
+        return JSONResponse(content={
+            "connector": connector,
+            "request_url_masked": masked_url,
+            "error": str(e)
+        })
 
 @app.get("/api/data")
 async def get_dashboard_data():
@@ -1242,7 +1312,7 @@ async def serve_index():
                     lines.push(line);
                 });
 
-                const csvContent = '\ufeff' + lines.join('\n');
+                const csvContent = '\\ufeff' + lines.join('\\n');
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
