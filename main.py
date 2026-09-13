@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -21,35 +22,98 @@ CACHE: Dict[str, Any] = {
 WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 REFRESH_INTERVAL_SECONDS = 90
+DEFAULT_LOOKBACK_DAYS = 30
+
+
+def get_default_date_range(days: int = DEFAULT_LOOKBACK_DAYS):
+    """يحسب نطاق تاريخ افتراضي (date_from / date_to) بصيغة YYYY-MM-DD.
+    يغطي آخر `days` يوماً بما فيها اليوم الحالي، لضمان أن Windsor.ai
+    لا يُرجع بيانات فارغة بسبب غياب نطاق زمني صريح في الطلب."""
+    today = datetime.now(timezone.utc).date()
+    date_from = today - timedelta(days=days)
+    return date_from.isoformat(), today.isoformat()
+
 
 async def fetch_windsor_connector(connector: str, params: dict) -> list:
+    """يجلب بيانات من موصل Windsor.ai معيّن، مع:
+    - إرسال نطاق تاريخ افتراضي (آخر 30 يوماً) تلقائياً إن لم يُحدَّد صراحة.
+    - تسجيل تفصيلي للأخطاء (رمز الحالة + نص الاستجابة) لتسهيل تتبع الأعطال.
+    - إرجاع قائمة فارغة دائماً عند أي فشل، حتى لا يتسبب في كسر asyncio.gather
+      أو باقي مسار التحديث."""
     if not WINDSOR_API_KEY:
+        logger.warning(f"WINDSOR_API_KEY غير مضبوط - تم تخطي الاتصال بموصل '{connector}'")
         return []
+
     url = f"https://connectors.windsor.ai/{connector}"
-    base_params = {"api_key": WINDSOR_API_KEY, "_renderer": "json"}
+    date_from, date_to = get_default_date_range()
+
+    base_params = {
+        "api_key": WINDSOR_API_KEY,
+        "_renderer": "json",
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+    # السماح باستبدال fields أو date_from/date_to إذا مُرِّرت صراحة في params
     base_params.update(params)
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             res = await client.get(url, params=base_params)
-            if res.status_code == 200:
+
+            if res.status_code != 200:
+                logger.error(
+                    f"فشل طلب Windsor لموصل '{connector}' - رمز الحالة: {res.status_code} - "
+                    f"نص الاستجابة: {res.text[:500]}"
+                )
+                return []
+
+            try:
                 res_data = res.json()
-                if isinstance(res_data, dict) and "data" in res_data:
-                    return res_data["data"]
-                elif isinstance(res_data, list):
-                    return res_data
+            except Exception as parse_err:
+                logger.error(
+                    f"تعذر تحليل JSON من موصل '{connector}': {parse_err} - "
+                    f"نص الاستجابة: {res.text[:500]}"
+                )
+                return []
+
+            if isinstance(res_data, dict):
+                data_field = res_data.get("data")
+                if isinstance(data_field, list):
+                    return data_field
+                if "error" in res_data:
+                    logger.error(f"خطأ من Windsor لموصل '{connector}': {res_data.get('error')}")
+                    return []
+                logger.warning(
+                    f"استجابة غير متوقعة (dict بدون قائمة data) من موصل '{connector}': "
+                    f"{str(res_data)[:300]}"
+                )
+                return []
+            elif isinstance(res_data, list):
+                return res_data
+            else:
+                logger.warning(f"نوع استجابة غير معروف من موصل '{connector}': {type(res_data)}")
+                return []
+
+    except httpx.TimeoutException:
+        logger.error(f"انتهت مهلة الاتصال (Timeout) بموصل '{connector}'")
+        return []
     except Exception as e:
-        logger.error(f"Error fetching {connector}: {e}")
-    return []
+        logger.error(f"خطأ غير متوقع أثناء جلب بيانات '{connector}': {e}")
+        return []
 
 async def refresh_cache_and_keep_alive():
     global CACHE
     while True:
         try:
-            logger.info("جاري تحديث بيانات إعلانات elevenz...")
-            
-            meta_fields = "account_name,campaign,adset_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date,actions,results,inline_post_engagement,onsite_conversion_messaging_conversation_started_7d"
-            tiktok_fields = "account_name,campaign_name,adgroup_name,ad_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date,cost_per_conversion"
-            google_fields = "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,all_conversions,impressions,cpc,ctr,date"
+            date_from, date_to = get_default_date_range()
+            logger.info(f"جاري تحديث بيانات إعلانات elevenz... (النطاق الزمني: {date_from} إلى {date_to})")
+
+            # حقول أساسية ومضمونة الدعم في موصلات Windsor.ai
+            # (تم تجنب حقول غير موثقة بشكل مضمون مثل onsite_conversion_messaging_conversation_started_7d
+            # أو cost_per_conversion أو all_conversions، والتي قد تتسبب في استجابة فارغة أو خطأ من الموصل)
+            meta_fields = "account_name,campaign,adset_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date,actions"
+            tiktok_fields = "account_name,campaign_name,adgroup_name,ad_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date"
+            google_fields = "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date"
 
             meta_res, tiktok_res, google_res = await asyncio.gather(
                 fetch_windsor_connector("facebook", {"fields": meta_fields}),
@@ -62,6 +126,12 @@ async def refresh_cache_and_keep_alive():
             CACHE["tiktok_ads"] = tiktok_res if isinstance(tiktok_res, list) else []
             CACHE["google_ads"] = google_res if isinstance(google_res, list) else []
             CACHE["last_updated"] = asyncio.get_event_loop().time()
+
+            logger.info(
+                f"تم التحديث: Meta={len(CACHE['meta_ads'])} صف، "
+                f"TikTok={len(CACHE['tiktok_ads'])} صف، "
+                f"Google={len(CACHE['google_ads'])} صف"
+            )
             
             target_url = RENDER_EXTERNAL_URL.rstrip('/') if RENDER_EXTERNAL_URL else "http://127.0.0.1:8000"
             try:
