@@ -49,7 +49,7 @@ async def refresh_cache_and_keep_alive():
             
             meta_fields = "account_name,campaign,adset_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date,actions,results,inline_post_engagement,onsite_conversion_messaging_conversation_started_7d"
             tiktok_fields = "account_name,campaign_name,adgroup_name,ad_name,clicks,spend,conversion,conversions,impressions,cpc,ctr,date,cost_per_conversion"
-            google_fields = "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,impressions,cpc,ctr,date"
+            google_fields = "account_name,campaign,ad_group_name,ad_name,clicks,spend,conversions,all_conversions,impressions,cpc,ctr,date"
 
             meta_res, tiktok_res, google_res = await asyncio.gather(
                 fetch_windsor_connector("facebook", {"fields": meta_fields}),
@@ -116,7 +116,6 @@ async def serve_index():
                 --nested-bg: #f8fafc;
                 --nested-deep: #f1f5f9;
 
-                /* ألوان المراحل والبادجات */
                 --stage-green-bg: #f0fdf4;
                 --stage-green-border: #bbf7d0;
                 --stage-green-text: #166534;
@@ -322,7 +321,7 @@ async def serve_index():
                 <div class="card">
                     <div class="card-title">Google Ads</div>
                     <div class="card-value" id="google-spend">0.00 ر.س</div>
-                    <div class="card-sub" id="google-sub">0 تحويلات</div>
+                    <div class="card-sub" id="google-sub">0 إحالات</div>
                 </div>
                 <div class="card">
                     <div class="card-title">TikTok Ads</div>
@@ -360,7 +359,7 @@ async def serve_index():
 
             function parseMetaConversions(item) {
                 if (!item) return 0;
-                let res = safeNum(item.conversions || item.results || item.actions || item.onsite_conversion_messaging_conversation_started_7d);
+                let res = safeNum(item.conversions || item.results || item.onsite_conversion_messaging_conversation_started_7d);
                 if (res > 0) return res;
                 if (item.actions && Array.isArray(item.actions)) {
                     let total = 0;
@@ -371,7 +370,12 @@ async def serve_index():
                     });
                     if (total > 0) return total;
                 }
-                return 0;
+                return safeNum(item.actions);
+            }
+
+            function parseGoogleConversions(item) {
+                if (!item) return 0;
+                return safeNum(item.conversions || item.all_conversions || item.results);
             }
 
             function filterByDate(list) {
@@ -453,10 +457,18 @@ async def serve_index():
                 let tiktokSpend = tiktokList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
                 let googleSpend = googleList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
 
+                let metaConv = metaList.reduce((s, i) => s + parseMetaConversions(i), 0);
+                let tiktokConv = tiktokList.reduce((s, i) => s + safeNum(i.conversions || i.conversion || i.results), 0);
+                let googleConv = googleList.reduce((s, i) => s + parseGoogleConversions(i), 0);
+
                 document.getElementById('meta-spend').innerText = metaSpend.toFixed(2) + ' ر.س';
                 document.getElementById('tiktok-spend').innerText = tiktokSpend.toFixed(2) + ' ر.س';
                 document.getElementById('google-spend').innerText = googleSpend.toFixed(2) + ' ر.س';
                 document.getElementById('total-spend').innerText = (metaSpend + tiktokSpend + googleSpend).toFixed(2) + ' ر.س';
+
+                document.getElementById('meta-sub').innerText = `${metaConv.toLocaleString('ar-SA')} محادثة/نتيجة`;
+                document.getElementById('tiktok-sub').innerText = `${tiktokConv.toLocaleString('ar-SA')} تحويل/نقرة`;
+                document.getElementById('google-sub').innerText = `${googleConv.toLocaleString('ar-SA')} إحالات`;
 
                 let timeText = currentTimeRange === 'today' ? 'اليوم' : (currentTimeRange === 'yesterday' ? 'أمس' : 'آخر 7 أيام');
                 document.getElementById('update-time').innerText = `تقرير الأداء (${timeText}) - آخر تحديث: ${new Date().toLocaleTimeString('ar-SA')}`;
@@ -465,7 +477,7 @@ async def serve_index():
                 renderHierarchicalTables(metaList, tiktokList, googleList);
             }
 
-            function groupByTree(list, isMeta = false) {
+            function groupByTree(list, isMeta = false, isGoogle = false) {
                 let tree = {};
                 list.forEach(i => {
                     let cName = i.campaign || i.campaign_name || 'حملة رئيسية';
@@ -479,7 +491,15 @@ async def serve_index():
                     let sp = safeNum(i.spend || i.cost);
                     let cl = safeNum(i.clicks);
                     let im = safeNum(i.impressions);
-                    let cv = isMeta ? parseMetaConversions(i) : safeNum(i.conversions || i.conversion || i.results);
+                    
+                    let cv = 0;
+                    if (isMeta) {
+                        cv = parseMetaConversions(i);
+                    } else if (isGoogle) {
+                        cv = parseGoogleConversions(i);
+                    } else {
+                        cv = safeNum(i.conversions || i.conversion || i.results);
+                    }
 
                     tree[cName].spend += sp; tree[cName].clicks += cl; tree[cName].impressions += im; tree[cName].conv += cv;
                     tree[cName].groups[gName].spend += sp; tree[cName].groups[gName].clicks += cl; tree[cName].groups[gName].impressions += im; tree[cName].groups[gName].conv += cv;
@@ -496,9 +516,9 @@ async def serve_index():
                 const container = document.getElementById('campaigns-tables-container');
                 container.innerHTML = '';
 
-                const buildPlatformTreeHtml = (title, list, convLabel, platformKey, isTikTok = false, isMeta = false) => {
+                const buildPlatformTreeHtml = (title, list, convLabel, platformKey, isTikTok = false, isMeta = false, isGoogle = false) => {
                     if (list.length === 0) return '';
-                    let tree = groupByTree(list, isMeta);
+                    let tree = groupByTree(list, isMeta, isGoogle);
                     let rowsHtml = '';
                     let cIndex = 0;
 
@@ -569,9 +589,9 @@ async def serve_index():
                     `;
                 };
 
-                let html = buildPlatformTreeHtml('Meta Ads', metaList, 'المحادثات/النتائج', 'meta', false, true);
-                html += buildPlatformTreeHtml('TikTok Ads', tiktokList, 'التحويلات/المؤشرات', 'tiktok', true, false);
-                html += buildPlatformTreeHtml('Google Ads', googleList, 'التحويلات', 'google');
+                let html = buildPlatformTreeHtml('Meta Ads', metaList, 'المحادثات/النتائج', 'meta', false, true, false);
+                html += buildPlatformTreeHtml('TikTok Ads', tiktokList, 'التحويلات/المؤشرات', 'tiktok', true, false, false);
+                html += buildPlatformTreeHtml('Google Ads', googleList, 'الإحالات', 'google', false, false, true);
 
                 container.innerHTML = html || '<div class="platform-card" style="padding:20px; text-align:center;">لا توجد بيانات متاحة</div>';
             }
