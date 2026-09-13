@@ -223,12 +223,71 @@ async def debug_windsor(connector: str = "facebook"):
             "error": str(e)
         })
 
+def _valid_iso_date(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 @app.get("/api/data")
-async def get_dashboard_data():
+async def get_dashboard_data(date_from: str = None, date_to: str = None):
+    # لا يوجد نطاق تاريخ مخصص → إرجاع الكاش التلقائي (يُحدَّث كل REFRESH_INTERVAL_SECONDS لآخر 30 يوماً)
+    if not date_from and not date_to:
+        return JSONResponse(content={
+            "status": "success",
+            "data": CACHE,
+            "last_updated": CACHE["last_updated"]
+        })
+
+    # طُلب نطاق تاريخ مخصص من الواجهة → إعادة الاستعلام من Windsor.ai مباشرة بهذا النطاق
+    if not date_from or not date_to or not _valid_iso_date(date_from) or not _valid_iso_date(date_to):
+        return JSONResponse(content={
+            "status": "error",
+            "message": "صيغة التاريخ غير صحيحة. الصيغة المطلوبة: YYYY-MM-DD ويجب توفير date_from و date_to معاً."
+        }, status_code=400)
+
+    if date_from > date_to:
+        return JSONResponse(content={
+            "status": "error",
+            "message": "تاريخ البداية (date_from) يجب أن يسبق أو يساوي تاريخ النهاية (date_to)."
+        }, status_code=400)
+
+    logger.info(f"طلب نطاق مخصص من الواجهة: {date_from} إلى {date_to}")
+
+    meta_res, tiktok_res, google_res = await asyncio.gather(
+        fetch_windsor_connector("facebook", {
+            "fields": CONNECTOR_FIELDS["facebook"], "date_from": date_from, "date_to": date_to
+        }),
+        fetch_windsor_connector("tiktok", {
+            "fields": CONNECTOR_FIELDS["tiktok"], "date_from": date_from, "date_to": date_to
+        }),
+        fetch_windsor_connector("google_ads", {
+            "fields": CONNECTOR_FIELDS["google_ads"], "date_from": date_from, "date_to": date_to
+        }),
+        return_exceptions=True
+    )
+
+    fresh_data = {
+        "meta_ads": meta_res if isinstance(meta_res, list) else [],
+        "tiktok_ads": tiktok_res if isinstance(tiktok_res, list) else [],
+        "google_ads": google_res if isinstance(google_res, list) else [],
+        "last_updated": asyncio.get_event_loop().time(),
+    }
+
+    logger.info(
+        f"نتيجة النطاق المخصص ({date_from} → {date_to}): "
+        f"Meta={len(fresh_data['meta_ads'])} صف، "
+        f"TikTok={len(fresh_data['tiktok_ads'])} صف، "
+        f"Google={len(fresh_data['google_ads'])} صف"
+    )
+
     return JSONResponse(content={
         "status": "success",
-        "data": CACHE,
-        "last_updated": CACHE["last_updated"]
+        "data": fresh_data,
+        "last_updated": fresh_data["last_updated"],
+        "range": {"date_from": date_from, "date_to": date_to}
     })
 
 @app.get("/", response_class=HTMLResponse)
@@ -390,7 +449,7 @@ async def serve_index():
             .btn-copy:hover { border-color: var(--accent-orange); color: var(--accent-orange); }
             .btn-copy svg { width: 16px; height: 16px; flex-shrink: 0; }
 
-            .time-selector { display: flex; gap: 8px; margin-bottom: 26px; }
+            .time-selector { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
             .time-btn {
                 background-color: var(--card-bg);
                 border: 1px solid var(--border-color);
@@ -409,6 +468,43 @@ async def serve_index():
                 color: #fff;
                 border-color: var(--sidebar-bg);
             }
+            .time-btn:disabled, .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+            .time-btn svg { width: 13px; height: 13px; vertical-align: -2px; margin-left: 5px; }
+
+            .custom-range-box {
+                display: none;
+                align-items: center;
+                gap: 8px;
+                background-color: var(--card-bg);
+                border: 1px solid var(--border-color);
+                border-radius: 999px;
+                padding: 6px 8px 6px 16px;
+                flex-wrap: wrap;
+            }
+            .custom-range-box input[type="date"] {
+                border: 1px solid var(--border-color);
+                border-radius: 999px;
+                padding: 7px 12px;
+                font-family: inherit;
+                font-size: 12.5px;
+                color: var(--text-dark);
+                background: var(--nested-bg);
+            }
+            .custom-range-box span { font-size: 12px; color: var(--text-muted); font-weight: 700; }
+            .custom-range-box .btn-apply-range {
+                background-color: var(--accent-orange);
+                color: #fff;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 999px;
+                font-family: inherit;
+                font-size: 12.5px;
+                font-weight: 700;
+                cursor: pointer;
+            }
+            .custom-range-box .btn-apply-range:hover { opacity: 0.9; }
+            .range-caption { margin-bottom: 26px; font-size: 12px; color: var(--text-muted); font-weight: 600; }
+            .range-caption b { color: var(--text-dark); }
 
             .cards-container { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-bottom: 22px; }
             .card {
@@ -421,10 +517,12 @@ async def serve_index():
             .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
             .card-title { font-size: 13px; color: var(--text-muted); font-weight: 600; }
             .card-icon {
-                width: 34px; height: 34px; border-radius: 10px;
+                width: 36px; height: 36px; border-radius: 10px;
                 display: flex; align-items: center; justify-content: center;
-                font-size: 16px; flex-shrink: 0;
+                flex-shrink: 0; overflow: hidden;
             }
+            .card-icon svg { width: 20px; height: 20px; display: block; }
+            .card-icon.icon-wallet svg { width: 18px; height: 18px; }
             .card-value { font-size: 27px; font-weight: 800; color: var(--text-dark); margin-bottom: 6px; letter-spacing: -0.5px; }
             .card-sub { font-size: 12.5px; font-weight: 700; }
             .card-meta { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color); display: flex; gap: 14px; font-size: 11.5px; color: var(--text-muted); font-weight: 600; }
@@ -651,7 +749,7 @@ async def serve_index():
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="3"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         نسخ التقرير
                     </button>
-                    <button class="btn btn-refresh" onclick="fetchData()">
+                    <button class="btn btn-refresh" onclick="refreshData()">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                         تحديث البيانات
                     </button>
@@ -659,16 +757,32 @@ async def serve_index():
             </div>
 
             <div class="time-selector">
-                <button class="time-btn" onclick="setTimeRange('today', this)">اليوم</button>
-                <button class="time-btn active" onclick="setTimeRange('yesterday', this)">أمس</button>
-                <button class="time-btn" onclick="setTimeRange('last7', this)">آخر 7 أيام</button>
+                <button class="time-btn" onclick="applyDatePreset('today', this)">اليوم</button>
+                <button class="time-btn active" id="btn-yesterday" onclick="applyDatePreset('yesterday', this)">أمس</button>
+                <button class="time-btn" onclick="applyDatePreset('last7', this)">آخر 7 أيام</button>
+                <button class="time-btn" onclick="applyDatePreset('last14', this)">آخر 14 يوماً</button>
+                <button class="time-btn" onclick="applyDatePreset('thismonth', this)">هذا الشهر</button>
+                <button class="time-btn" id="btn-custom-toggle" onclick="toggleCustomRange(this)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>
+                    نطاق مخصص
+                </button>
+                <div class="custom-range-box" id="custom-range-box">
+                    <span>من</span>
+                    <input type="date" id="date-from-input">
+                    <span>إلى</span>
+                    <input type="date" id="date-to-input">
+                    <button class="btn-apply-range" onclick="applyCustomRange()">تطبيق</button>
+                </div>
             </div>
+            <div class="range-caption" id="range-caption">الفترة المعروضة: <b>أمس</b></div>
 
             <div class="cards-container">
                 <div class="card">
                     <div class="card-top">
                         <div class="card-title">إجمالي الإنفاق (الكلي)</div>
-                        <div class="card-icon" style="background:var(--accent-orange-light); color:var(--accent-orange);">💰</div>
+                        <div class="card-icon icon-wallet" style="background:var(--accent-orange-light);">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="#f05a28" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"></path><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path></svg>
+                        </div>
                     </div>
                     <div class="card-value" id="total-spend">0.00 ر.س</div>
                     <div class="card-sub" style="color:var(--text-muted);">جميع حسابات الربط</div>
@@ -680,7 +794,9 @@ async def serve_index():
                 <div class="card">
                     <div class="card-top">
                         <div class="card-title">Google Ads</div>
-                        <div class="card-icon" style="background:#eef4ff; color:var(--accent-blue);">🔍</div>
+                        <div class="card-icon" style="background:#f8f9fa;">
+                            <svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.303c-1.649,4.657-6.08,8-11.303,8c-6.627,0-12-5.373-12-12c0-6.627,5.373-12,12-12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C12.955,4,4,12.955,4,24c0,11.045,8.955,20,20,20c11.045,0,20-8.955,20-20C44,22.659,43.862,21.35,43.611,20.083z"></path><path fill="#FF3D00" d="M6.306,14.691l6.571,4.819C14.655,15.108,18.961,12,24,12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C16.318,4,9.656,8.337,6.306,14.691z"></path><path fill="#4CAF50" d="M24,44c5.166,0,9.86-1.977,13.409-5.192l-6.19-5.238C29.211,35.091,26.715,36,24,36c-5.202,0-9.619-3.317-11.283-7.946l-6.522,5.025C9.505,39.556,16.227,44,24,44z"></path><path fill="#1976D2" d="M43.611,20.083H42V20H24v8h11.303c-0.792,2.237-2.231,4.166-4.087,5.571c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z"></path></svg>
+                        </div>
                     </div>
                     <div class="card-value" id="google-spend">0.00 ر.س</div>
                     <div class="card-sub" id="google-sub" style="color:var(--accent-blue);">0 إحالات</div>
@@ -692,7 +808,9 @@ async def serve_index():
                 <div class="card">
                     <div class="card-top">
                         <div class="card-title">TikTok Ads</div>
-                        <div class="card-icon" style="background:#fff1ec; color:var(--accent-orange);">🎵</div>
+                        <div class="card-icon" style="background:#0f0f0f;">
+                            <svg viewBox="0 0 48 48"><path fill="#25F4EE" d="M33.6,15.4c-2.1-1.4-3.6-3.6-4-6.2c-0.1-0.5-0.1-1-0.1-1.5h-6v24.6c0,2.9-2.4,5.3-5.3,5.3 c-0.9,0-1.8-0.2-2.5-0.7c-1.7-0.9-2.8-2.7-2.8-4.7c0-2.9,2.4-5.3,5.3-5.3c0.5,0,1.1,0.1,1.6,0.3v-6.1c-0.5-0.1-1-0.1-1.6-0.1 c-6.3,0-11.4,5.1-11.4,11.4c0,3.9,1.9,7.3,4.9,9.4c1.9,1.3,4.2,2.1,6.7,2.1c6.3,0,11.4-5.1,11.4-11.4V19.1 c2.4,1.8,5.4,2.8,8.6,2.8v-6C36.9,15.9,35.1,15.8,33.6,15.4z"></path><path fill="#FE2C55" d="M31.6,13.4c-2.1-1.4-3.6-3.6-4-6.2c-0.1-0.5-0.1-1-0.1-1.5h-6v24.6c0,2.9-2.4,5.3-5.3,5.3 c-0.9,0-1.8-0.2-2.5-0.7c-1.5-0.8-2.6-2.4-2.8-4.2c-0.4-2.9,1.7-5.6,4.5-6c0.5-0.1,1.1-0.1,1.6,0v-6.1c-6.2-0.1-11.3,4.9-11.4,11.1 c0,3.9,1.9,7.5,4.9,9.6c1.9,1.3,4.2,2.1,6.7,2.1c6.3,0,11.4-5.1,11.4-11.4V17.1c2.4,1.8,5.4,2.8,8.6,2.8v-6 C34.9,13.9,33.1,13.8,31.6,13.4z"></path><path fill="#ffffff" d="M35,17.9c-3.2,0-6.2-1-8.6-2.8v14.7c0,6.3-5.1,11.4-11.4,11.4c-2.5,0-4.8-0.8-6.7-2.1 c2.1,2.3,5.1,3.7,8.4,3.7c6.3,0,11.4-5.1,11.4-11.4V16.7c2.4,1.8,5.4,2.8,8.6,2.8v-6C36.4,13.5,36.4,13.5,35,17.9z"></path></svg>
+                        </div>
                     </div>
                     <div class="card-value" id="tiktok-spend">0.00 ر.س</div>
                     <div class="card-sub" id="tiktok-sub" style="color:var(--accent-orange);">0 تحويل/نقرة</div>
@@ -704,7 +822,9 @@ async def serve_index():
                 <div class="card">
                     <div class="card-top">
                         <div class="card-title">Meta Ads</div>
-                        <div class="card-icon" style="background:#eef4ff; color:#0284c7;">📘</div>
+                        <div class="card-icon" style="background:#e7f0ff;">
+                            <svg viewBox="0 0 36 36"><path fill="#1877F2" d="M36,18c0-9.94-8.06-18-18-18S0,8.06,0,18c0,8.98,6.58,16.41,15.19,17.76V23.13h-4.57V18h4.57v-3.91 c0-4.51,2.69-7.01,6.8-7.01c1.97,0,4.03,0.35,4.03,0.35v4.43h-2.27c-2.24,0-2.94,1.39-2.94,2.81V18h5.01l-0.8,5.13h-4.21v12.63 C29.42,34.41,36,26.98,36,18z"></path></svg>
+                        </div>
                     </div>
                     <div class="card-value" id="meta-spend">0.00 ر.س</div>
                     <div class="card-sub" id="meta-sub" style="color:#0284c7;">0 محادثة/نتيجة</div>
@@ -774,9 +894,12 @@ async def serve_index():
 
             let chartInstance = null;
             let donutInstance = null;
-            let currentTimeRange = 'yesterday';
             let globalData = {};
             let lastMetrics = null;
+            let isLoadingData = false;
+
+            // نطاق التاريخ الحالي المطبَّق فعلياً على الطلب المرسل لـ Windsor.ai
+            let dateRangeState = { preset: 'yesterday', date_from: null, date_to: null };
 
             // ===== Explorer state =====
             const PLATFORMS = [
@@ -827,23 +950,125 @@ async def serve_index():
                 return safeNum(item.conversions || item.all_conversions || item.results);
             }
 
-            function filterByDate(list) {
-                if (!list || !Array.isArray(list)) return [];
-                const now = new Date();
-                const todayStr = now.toISOString().split('T')[0];
-                const yesterday = new Date(now);
-                yesterday.setDate(yesterday.getDate() - 1);
-                const yesterdayStr = yesterday.toISOString().split('T')[0];
-                const d7 = new Date(now);
-                d7.setDate(d7.getDate() - 7);
+            // ملاحظة: الباك إند الآن يُرجع بيانات مُصفّاة مسبقاً بحسب نطاق التاريخ
+            // المطلوب فعلياً (date_from/date_to تُرسَل مباشرة إلى Windsor.ai)، لذلك لم
+            // تعد هناك حاجة لتخمين النطاق على العميل. هذه دالة أمان فقط تضمن مصفوفة صالحة.
+            function scopedList(list) {
+                return Array.isArray(list) ? list : [];
+            }
 
-                return list.filter(i => {
-                    if (!i.date) return true;
-                    if (currentTimeRange === 'today') return i.date === todayStr;
-                    if (currentTimeRange === 'yesterday') return i.date === yesterdayStr;
-                    if (currentTimeRange === 'last7') return new Date(i.date) >= d7;
-                    return true;
-                });
+            function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+            function toIsoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+
+            function computePresetRange(preset) {
+                const today = new Date();
+                if (preset === 'today') {
+                    return { from: toIsoDate(today), to: toIsoDate(today) };
+                }
+                if (preset === 'yesterday') {
+                    const y = new Date(today);
+                    y.setDate(y.getDate() - 1);
+                    return { from: toIsoDate(y), to: toIsoDate(y) };
+                }
+                if (preset === 'last7') {
+                    const f = new Date(today);
+                    f.setDate(f.getDate() - 6);
+                    return { from: toIsoDate(f), to: toIsoDate(today) };
+                }
+                if (preset === 'last14') {
+                    const f = new Date(today);
+                    f.setDate(f.getDate() - 13);
+                    return { from: toIsoDate(f), to: toIsoDate(today) };
+                }
+                if (preset === 'thismonth') {
+                    const f = new Date(today.getFullYear(), today.getMonth(), 1);
+                    return { from: toIsoDate(f), to: toIsoDate(today) };
+                }
+                return null;
+            }
+
+            function buildRangeLabel(preset, dateFrom, dateTo) {
+                const presetNames = {
+                    today: 'اليوم', yesterday: 'أمس', last7: 'آخر 7 أيام',
+                    last14: 'آخر 14 يوماً', thismonth: 'هذا الشهر'
+                };
+                if (preset && presetNames[preset]) {
+                    if (dateFrom === dateTo) return `${presetNames[preset]} (${dateFrom})`;
+                    return `${presetNames[preset]} (${dateFrom} → ${dateTo})`;
+                }
+                if (dateFrom === dateTo) return dateFrom;
+                return `من ${dateFrom} إلى ${dateTo}`;
+            }
+
+            function setLoadingState(loading) {
+                isLoadingData = loading;
+                document.querySelectorAll('.time-btn, .btn-refresh, .btn-apply-range').forEach(b => { b.disabled = loading; });
+                if (loading) {
+                    document.getElementById('update-time').innerText = 'جاري تحديث البيانات من Windsor.ai...';
+                }
+            }
+
+            async function applyDatePreset(preset, btn) {
+                if (isLoadingData) return;
+                document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+                document.getElementById('custom-range-box').style.display = 'none';
+
+                const range = computePresetRange(preset);
+                dateRangeState = { preset, date_from: range.from, date_to: range.to };
+                await fetchDataForRange(range.from, range.to);
+            }
+
+            function toggleCustomRange(btn) {
+                const box = document.getElementById('custom-range-box');
+                const isHidden = box.style.display === 'none' || !box.style.display;
+                box.style.display = isHidden ? 'flex' : 'none';
+                if (isHidden) {
+                    document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    if (!document.getElementById('date-from-input').value) {
+                        document.getElementById('date-from-input').value = dateRangeState.date_from || toIsoDate(new Date());
+                        document.getElementById('date-to-input').value = dateRangeState.date_to || toIsoDate(new Date());
+                    }
+                }
+            }
+
+            async function applyCustomRange() {
+                if (isLoadingData) return;
+                const from = document.getElementById('date-from-input').value;
+                const to = document.getElementById('date-to-input').value;
+                if (!from || !to) { showToast('يرجى تحديد تاريخي البداية والنهاية'); return; }
+                if (from > to) { showToast('تاريخ البداية يجب أن يسبق تاريخ النهاية أو يساويه'); return; }
+
+                dateRangeState = { preset: 'custom', date_from: from, date_to: to };
+                await fetchDataForRange(from, to);
+            }
+
+            async function fetchDataForRange(dateFrom, dateTo) {
+                setLoadingState(true);
+                try {
+                    const res = await fetch(`/api/data?date_from=${dateFrom}&date_to=${dateTo}`);
+                    const json = await res.json();
+                    if (json.status !== 'success') {
+                        showToast(json.message || 'تعذر تحديث البيانات لهذا النطاق');
+                        return;
+                    }
+                    globalData = json.data || {};
+                    updateDashboardUI();
+                } catch (e) {
+                    console.error('Error fetching range data:', e);
+                    showToast('تعذر الاتصال بالخادم');
+                } finally {
+                    setLoadingState(false);
+                }
+            }
+
+            async function refreshData() {
+                if (isLoadingData) return;
+                const { date_from, date_to } = dateRangeState;
+                if (!date_from || !date_to) return;
+                await fetchDataForRange(date_from, date_to);
+                showToast('تم تحديث البيانات! 🔄');
             }
 
             function tierBadge(ctr) {
@@ -951,21 +1176,10 @@ async def serve_index():
                 }
             }
 
-            async function fetchData() {
-                try {
-                    const res = await fetch('/api/data');
-                    const json = await res.json();
-                    globalData = json.data || {};
-                    updateDashboardUI();
-                } catch (e) {
-                    console.error('Error fetching data:', e);
-                }
-            }
-
             function updateDashboardUI() {
-                let metaList = filterByDate(globalData.meta_ads);
-                let tiktokList = filterByDate(globalData.tiktok_ads);
-                let googleList = filterByDate(globalData.google_ads);
+                let metaList = scopedList(globalData.meta_ads);
+                let tiktokList = scopedList(globalData.tiktok_ads);
+                let googleList = scopedList(globalData.google_ads);
 
                 let metaSpend = metaList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
                 let tiktokSpend = tiktokList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
@@ -1017,9 +1231,10 @@ async def serve_index():
                 document.getElementById('tiktok-cpa').innerText = tiktokCpa !== null ? tiktokCpa.toFixed(2) : '--';
                 document.getElementById('google-cpa').innerText = googleCpa !== null ? googleCpa.toFixed(2) : '--';
 
-                let timeText = currentTimeRange === 'today' ? 'اليوم' : (currentTimeRange === 'yesterday' ? 'أمس' : 'آخر 7 أيام');
+                let timeText = buildRangeLabel(dateRangeState.preset, dateRangeState.date_from, dateRangeState.date_to);
                 let nowStr = new Date().toLocaleTimeString('en-US');
                 document.getElementById('update-time').innerText = `تقرير الأداء (${timeText}) - آخر تحديث: ${nowStr}`;
+                document.getElementById('range-caption').innerHTML = `الفترة المعروضة: <b>${timeText}</b>`;
 
                 updateChart(metaSpend, tiktokSpend, googleSpend);
                 updateDonut(metaConv, tiktokConv, googleConv);
@@ -1069,7 +1284,7 @@ async def serve_index():
 
             function getExplorerRows() {
                 const cfg = platformCfg(explorerState.platform);
-                const fullList = filterByDate(globalData[cfg.dataKey]);
+                const fullList = scopedList(globalData[cfg.dataKey]);
                 let rows = [];
 
                 if (explorerState.level === 'campaigns') {
@@ -1317,19 +1532,12 @@ async def serve_index():
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `elevenz-${explorerState.platform}-${explorerState.level}-${currentTimeRange}.csv`;
+                a.download = `elevenz-${explorerState.platform}-${explorerState.level}-${dateRangeState.date_from}_to_${dateRangeState.date_to}.csv`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
                 showToast('تم تصدير الملف بنجاح! 📁');
-            }
-
-            function setTimeRange(range, btn) {
-                document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentTimeRange = range;
-                updateDashboardUI();
             }
 
             function fmt(n) { return (Math.round(n * 100) / 100).toLocaleString('en-US'); }
@@ -1394,7 +1602,10 @@ _تم إنشاء هذا التقرير تلقائياً عبر منصة elevenz_
                 toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
             }
 
-            document.addEventListener('DOMContentLoaded', fetchData);
+            document.addEventListener('DOMContentLoaded', () => {
+                const yestBtn = document.getElementById('btn-yesterday');
+                applyDatePreset('yesterday', yestBtn);
+            });
         </script>
     </body>
     </html>
