@@ -116,6 +116,7 @@ async def serve_index():
                 --accent-orange: #f05a28;
                 --accent-orange-light: #fff1ec;
                 --accent-blue: #2f6fed;
+                --accent-green: #31a24c;
                 --border-color: #eef1f6;
                 --nested-bg: #fafbfd;
                 --nested-deep: #f4f6fa;
@@ -135,6 +136,9 @@ async def serve_index():
                 --stage-red-bg: #fef1f0;
                 --stage-red-border: #fbd6d2;
                 --stage-red-text: #d13b2c;
+                --stage-gray-bg: #f2f4f7;
+                --stage-gray-border: #e3e7ee;
+                --stage-gray-text: #667085;
             }
             * { box-sizing: border-box; }
             body {
@@ -296,8 +300,8 @@ async def serve_index():
             }
             .chart-section-title { font-weight: 800; margin-bottom: 4px; color: var(--text-dark); font-size: 15px; }
             .chart-section-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; font-weight: 500; }
-            .chart-wrapper { height: 280px; position: relative; }
-            .donut-wrapper { height: 240px; position: relative; }
+            .chart-wrapper { height: 260px; position: relative; }
+            .donut-wrapper { height: 220px; position: relative; }
 
             .legend-list { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
             .legend-item { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
@@ -305,55 +309,145 @@ async def serve_index():
             .legend-label { display: flex; align-items: center; }
             .legend-value { color: var(--text-dark); font-weight: 800; }
 
-            .platform-card {
+            /* ===== Explorer (Meta Ads Manager style) ===== */
+            .explorer-card {
                 background-color: var(--card-bg);
                 border-radius: var(--radius-lg);
                 box-shadow: var(--shadow-card);
-                margin-bottom: 20px;
                 overflow: hidden;
             }
-            .platform-header {
-                padding: 18px 24px;
-                font-weight: 800;
-                font-size: 15px;
+            .explorer-top {
                 display: flex;
                 align-items: center;
-                gap: 10px;
-                border-bottom: 1px solid var(--border-color);
-                color: var(--text-dark);
+                justify-content: space-between;
+                gap: 14px;
+                padding: 16px 22px 0 22px;
+                flex-wrap: wrap;
             }
-            .platform-dot { width: 10px; height: 10px; border-radius: 50%; }
+            .platform-tabs { display: flex; gap: 6px; }
+            .platform-tab {
+                display: flex; align-items: center; gap: 7px;
+                padding: 8px 16px; border-radius: 999px; cursor: pointer;
+                font-size: 12.5px; font-weight: 700; color: var(--text-muted);
+                border: 1px solid var(--border-color); background: var(--card-bg);
+                transition: all 0.15s ease;
+            }
+            .platform-tab .pdot { width: 8px; height: 8px; border-radius: 50%; }
+            .platform-tab.active { background: var(--text-dark); color: #fff; border-color: var(--text-dark); }
+            .platform-tab:hover:not(.active) { border-color: var(--text-dark); color: var(--text-dark); }
+
+            .level-tabs {
+                display: flex;
+                gap: 6px;
+                padding: 16px 22px 0 22px;
+                border-bottom: 1px solid var(--border-color);
+                overflow-x: auto;
+            }
+            .level-tab {
+                padding: 10px 6px 14px 6px;
+                font-weight: 700;
+                font-size: 14px;
+                color: var(--text-muted);
+                cursor: pointer;
+                border-bottom: 3px solid transparent;
+                margin-bottom: -1px;
+                white-space: nowrap;
+                transition: color 0.15s ease;
+            }
+            .level-tab .tab-count {
+                display: inline-flex; align-items:center; justify-content:center;
+                min-width: 18px; height: 18px; padding: 0 5px; margin-right: 6px;
+                border-radius: 999px; background: var(--nested-deep); color: var(--text-muted);
+                font-size: 10.5px; font-weight: 800;
+            }
+            .level-tab.active { color: var(--text-dark); border-bottom-color: var(--accent-orange); }
+            .level-tab.active .tab-count { background: var(--accent-orange-light); color: var(--accent-orange); }
+            .level-tab:hover { color: var(--text-dark); }
+
+            .filter-chips { display: flex; gap: 8px; padding: 14px 22px 0 22px; flex-wrap: wrap; }
+            .filter-chip {
+                display: inline-flex; align-items: center; gap: 8px;
+                background: #eef4ff; color: var(--accent-blue);
+                padding: 6px 8px 6px 14px; border-radius: 999px;
+                font-size: 12px; font-weight: 700;
+            }
+            .filter-chip button {
+                background: rgba(47,111,237,0.14); border: none; color: var(--accent-blue);
+                width: 18px; height: 18px; border-radius: 50%; cursor: pointer;
+                display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1;
+                font-family: inherit;
+            }
+
+            .table-toolbar {
+                display: flex; align-items: center; gap: 10px;
+                padding: 14px 22px; flex-wrap: wrap;
+            }
+            .search-input {
+                flex: 1; min-width: 220px;
+                border: 1px solid var(--border-color); border-radius: 10px;
+                padding: 10px 14px; font-family: inherit; font-size: 13px;
+                background: var(--nested-bg); color: var(--text-dark);
+            }
+            .search-input:focus { outline: none; border-color: var(--accent-orange); background: #fff; }
+            .toolbar-btn {
+                background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px;
+                padding: 9px 14px; font-size: 12.5px; font-weight: 700; color: var(--text-muted);
+                cursor: pointer; display: flex; gap: 6px; align-items: center; font-family: inherit;
+                white-space: nowrap;
+            }
+            .toolbar-btn:hover { border-color: var(--accent-orange); color: var(--accent-orange); }
+            .toolbar-btn.primary { background: var(--text-dark); color: #fff; border-color: var(--text-dark); }
+            .toolbar-btn.primary:hover { opacity: 0.9; color: #fff; }
+            .toolbar-btn svg { width: 14px; height: 14px; }
 
             .table-scroll { overflow-x: auto; }
-            table { width: 100%; border-collapse: collapse; text-align: right; font-size: 13.5px; min-width: 760px; }
-            th, td { padding: 14px 20px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
-            th { color: var(--text-muted); font-weight: 700; background-color: var(--nested-deep); font-size: 12px; position: sticky; top: 0; }
+            table { width: 100%; border-collapse: collapse; text-align: right; font-size: 13.5px; min-width: 900px; }
+            th, td { padding: 14px 18px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+            th {
+                color: var(--text-muted); font-weight: 700; background-color: var(--nested-deep); font-size: 12px;
+                position: sticky; top: 0; cursor: pointer; user-select: none;
+            }
+            th.no-sort { cursor: default; }
+            th .sort-ico { font-size: 10px; margin-right: 4px; opacity: 0.45; }
+            th.sorted .sort-ico { opacity: 1; color: var(--accent-orange); }
             tbody tr:last-child td { border-bottom: none; }
+            tbody tr.data-row { transition: background-color 0.1s ease; }
+            tbody tr.data-row.clickable { cursor: pointer; }
+            tbody tr.data-row.clickable:hover { background-color: var(--nested-bg); }
 
-            .row-campaign { cursor: pointer; font-weight: 800; background-color: var(--card-bg); }
-            .row-campaign:hover { background-color: var(--nested-bg); }
-            .row-campaign td:first-child { display: flex; align-items: center; gap: 8px; }
-            .row-adgroup { cursor: pointer; background-color: var(--nested-bg); display: none; }
-            .row-adgroup:hover { background-color: var(--nested-deep); }
-            .row-adgroup td { padding-right: 44px; font-size: 13px; font-weight: 700; }
-            .row-ad { background-color: var(--nested-deep); display: none; }
-            .row-ad td { padding-right: 66px; font-size: 12.5px; color: var(--text-muted); font-weight: 500; }
-            .row-ad td:first-child { display: flex; align-items: center; gap: 8px; color: var(--text-dark); }
+            .name-cell { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--text-dark); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+            .name-icon { flex-shrink: 0; }
+            .drill-arrow { margin-right: auto; color: var(--text-faint); font-size: 12px; }
 
-            .chevron { display: inline-flex; transition: transform 0.18s ease; color: var(--text-faint); flex-shrink: 0; }
-            .chevron svg { width: 13px; height: 13px; }
-            .expanded > .chevron, td .chevron.rot { transform: rotate(-90deg); }
-            .row-campaign.expanded .chevron, .row-adgroup.expanded .chevron { transform: rotate(0deg); }
-            .row-campaign .chevron, .row-adgroup .chevron { transform: rotate(-90deg); }
+            .toggle-switch { position: relative; display: inline-block; width: 36px; height: 20px; direction: ltr; }
+            .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+            .toggle-slider {
+                position: absolute; inset: 0; cursor: not-allowed;
+                background-color: #d7dee8; transition: 0.2s; border-radius: 999px;
+            }
+            .toggle-slider:before {
+                content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+                background-color: #fff; transition: 0.2s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+            }
+            .toggle-switch input:checked + .toggle-slider { background-color: var(--accent-green); }
+            .toggle-switch input:checked + .toggle-slider:before { transform: translateX(16px); }
 
-            .name-icon { font-size: 14px; }
+            .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; }
+            .status-dot { width: 7px; height: 7px; border-radius: 50%; }
+            .status-active .status-dot { background-color: var(--accent-green); }
+            .status-active { color: var(--text-dark); }
+            .status-paused .status-dot { background-color: var(--text-faint); }
+            .status-paused { color: var(--text-muted); }
+
+            .metric-main { font-weight: 800; color: var(--text-dark); }
+            .metric-sub { font-size: 11px; color: var(--text-muted); font-weight: 500; margin-top: 2px; white-space: normal; max-width: 160px; }
 
             .badge { padding: 3px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 800; display: inline-block; }
             .badge-good { background-color: var(--stage-green-bg); border: 1px solid var(--stage-green-border); color: var(--stage-green-text); }
             .badge-medium { background-color: var(--stage-blue-bg); border: 1px solid var(--stage-blue-border); color: var(--stage-blue-text); }
             .badge-bad { background-color: var(--stage-red-bg); border: 1px solid var(--stage-red-border); color: var(--stage-red-text); }
 
-            .empty-state { padding: 40px 20px; text-align: center; color: var(--text-muted); font-weight: 600; font-size: 14px; }
+            .empty-state { padding: 50px 20px; text-align: center; color: var(--text-muted); font-weight: 600; font-size: 14px; }
 
             /* Toast */
             #toast {
@@ -375,6 +469,7 @@ async def serve_index():
                 display: flex;
                 align-items: center;
                 gap: 8px;
+                white-space: nowrap;
             }
             #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
@@ -498,18 +593,72 @@ async def serve_index():
                 </div>
             </div>
 
-            <div id="campaigns-tables-container"></div>
+            <div class="explorer-card">
+                <div class="explorer-top">
+                    <div class="platform-tabs" id="platform-tabs"></div>
+                </div>
+                <div class="level-tabs" id="level-tabs"></div>
+                <div class="filter-chips" id="filter-chips"></div>
+                <div class="table-toolbar">
+                    <input type="text" class="search-input" id="search-input" placeholder="ابحث عن حملة أو مجموعة أو إعلان" oninput="onSearch(this.value)">
+                    <button class="toolbar-btn" onclick="notImplementedYet()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18"></rect><rect x="14" y="3" width="7" height="10"></rect></svg>
+                        الأعمدة
+                    </button>
+                    <button class="toolbar-btn" onclick="notImplementedYet()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15V6M18.5 18a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM12 12H3M16 6H3M12 18H3"></path></svg>
+                        التجميع
+                    </button>
+                    <button class="toolbar-btn" id="export-btn" onclick="exportCsv()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        تصدير CSV
+                    </button>
+                </div>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr id="table-head"></tr>
+                        </thead>
+                        <tbody id="table-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <div id="toast"></div>
 
         <script>
             Chart.register(ChartDataLabels);
+            Chart.defaults.locale = 'en-US';
+            Chart.defaults.font.family = 'Cairo';
+
             let chartInstance = null;
             let donutInstance = null;
             let currentTimeRange = 'yesterday';
             let globalData = {};
             let lastMetrics = null;
+
+            // ===== Explorer state =====
+            const PLATFORMS = [
+                { key: 'meta', label: 'Meta Ads', dataKey: 'meta_ads', dot: '#0284c7', isMeta: true, isGoogle: false, resultLabel: 'النتائج', resultSub: 'محادثات تم بدؤها عبر الرسائل' },
+                { key: 'tiktok', label: 'TikTok Ads', dataKey: 'tiktok_ads', dot: '#f05a28', isMeta: false, isGoogle: false, resultLabel: 'النتائج', resultSub: 'تحويلات/نقرات إعلانية' },
+                { key: 'google', label: 'Google Ads', dataKey: 'google_ads', dot: '#0f2540', isMeta: false, isGoogle: true, resultLabel: 'النتائج', resultSub: 'إحالات' }
+            ];
+            const LEVELS = [
+                { key: 'campaigns', label: 'الحملات الإعلانية' },
+                { key: 'adsets', label: 'المجموعات الإعلانية' },
+                { key: 'ads', label: 'الإعلانات' }
+            ];
+
+            let explorerState = {
+                platform: 'meta',
+                level: 'campaigns',
+                selectedCampaign: null,
+                selectedGroup: null,
+                search: '',
+                sortKey: 'spend',
+                sortDir: -1
+            };
 
             function safeNum(val) {
                 if (!val) return 0;
@@ -656,7 +805,7 @@ async def serve_index():
                     legendEl.innerHTML = parts.map(p => `
                         <div class="legend-item">
                             <span class="legend-label"><span class="legend-dot" style="background:${p.color}"></span>${p.label}</span>
-                            <span class="legend-value">${p.value.toLocaleString('ar-SA')} (${total > 0 ? ((p.value/total)*100).toFixed(0) : 0}%)</span>
+                            <span class="legend-value">${p.value.toLocaleString('en-US')} (${total > 0 ? ((p.value/total)*100).toFixed(0) : 0}%)</span>
                         </div>
                     `).join('');
                 }
@@ -715,9 +864,9 @@ async def serve_index():
                 document.getElementById('google-spend').innerText = googleSpend.toFixed(2) + ' ر.س';
                 document.getElementById('total-spend').innerText = totalSpend.toFixed(2) + ' ر.س';
 
-                document.getElementById('meta-sub').innerText = `${metaConv.toLocaleString('ar-SA')} محادثة/نتيجة`;
-                document.getElementById('tiktok-sub').innerText = `${tiktokConv.toLocaleString('ar-SA')} تحويل/نقرة`;
-                document.getElementById('google-sub').innerText = `${googleConv.toLocaleString('ar-SA')} إحالات`;
+                document.getElementById('meta-sub').innerText = `${metaConv.toLocaleString('en-US')} محادثة/نتيجة`;
+                document.getElementById('tiktok-sub').innerText = `${tiktokConv.toLocaleString('en-US')} تحويل/نقرة`;
+                document.getElementById('google-sub').innerText = `${googleConv.toLocaleString('en-US')} إحالات`;
 
                 document.getElementById('total-cpc').innerText = cpcOf(totalSpend, totalClicks).toFixed(2);
                 document.getElementById('total-ctr').innerText = ctrOf(totalClicks, totalImpr).toFixed(1) + '%';
@@ -729,12 +878,12 @@ async def serve_index():
                 document.getElementById('google-cpa').innerText = googleCpa !== null ? googleCpa.toFixed(2) : '--';
 
                 let timeText = currentTimeRange === 'today' ? 'اليوم' : (currentTimeRange === 'yesterday' ? 'أمس' : 'آخر 7 أيام');
-                let nowStr = new Date().toLocaleTimeString('ar-SA');
+                let nowStr = new Date().toLocaleTimeString('en-US');
                 document.getElementById('update-time').innerText = `تقرير الأداء (${timeText}) - آخر تحديث: ${nowStr}`;
 
                 updateChart(metaSpend, tiktokSpend, googleSpend);
                 updateDonut(metaConv, tiktokConv, googleConv);
-                renderHierarchicalTables(metaList, tiktokList, googleList);
+                renderExplorer();
 
                 lastMetrics = {
                     timeText, nowStr,
@@ -745,170 +894,295 @@ async def serve_index():
                 };
             }
 
-            function groupByTree(list, isMeta = false, isGoogle = false) {
-                let tree = {};
+            // ===== Name accessors shared with previous tree logic =====
+            function campaignOf(i) { return i.campaign || i.campaign_name || 'حملة رئيسية'; }
+            function groupOf(i) { return i.adset_name || i.adgroup_name || i.ad_group_name || 'المجموعة الإعلانية'; }
+            function adOf(i) { return i.ad_name || 'الإعلان'; }
+
+            function convOf(item, cfg) {
+                if (cfg.isMeta) return parseMetaConversions(item);
+                if (cfg.isGoogle) return parseGoogleConversions(item);
+                return safeNum(item.conversions || item.conversion || item.results);
+            }
+
+            function platformCfg(key) {
+                return PLATFORMS.find(p => p.key === key);
+            }
+
+            function aggregateRows(list, keyFn, cfg) {
+                let map = {};
                 list.forEach(i => {
-                    let cName = i.campaign || i.campaign_name || 'حملة رئيسية';
-                    let gName = i.adset_name || i.adgroup_name || i.ad_group_name || 'المجموعة الإعلانية';
-                    let aName = i.ad_name || 'الإعلان';
-
-                    if (!tree[cName]) tree[cName] = { spend: 0, clicks: 0, impressions: 0, conv: 0, groups: {} };
-                    if (!tree[cName].groups[gName]) tree[cName].groups[gName] = { spend: 0, clicks: 0, impressions: 0, conv: 0, ads: {} };
-                    if (!tree[cName].groups[gName].ads[aName]) tree[cName].groups[gName].ads[aName] = { spend: 0, clicks: 0, impressions: 0, conv: 0 };
-
-                    let sp = safeNum(i.spend || i.cost);
-                    let cl = safeNum(i.clicks);
-                    let im = safeNum(i.impressions);
-                    
-                    let cv = 0;
-                    if (isMeta) {
-                        cv = parseMetaConversions(i);
-                    } else if (isGoogle) {
-                        cv = parseGoogleConversions(i);
-                    } else {
-                        cv = safeNum(i.conversions || i.conversion || i.results);
-                    }
-
-                    tree[cName].spend += sp; tree[cName].clicks += cl; tree[cName].impressions += im; tree[cName].conv += cv;
-                    tree[cName].groups[gName].spend += sp; tree[cName].groups[gName].clicks += cl; tree[cName].groups[gName].impressions += im; tree[cName].groups[gName].conv += cv;
-                    
-                    let ad = tree[cName].groups[gName].ads[aName];
-                    ad.spend += sp; ad.clicks += cl; ad.impressions += im; ad.conv += cv;
+                    let name = keyFn(i);
+                    if (!map[name]) map[name] = { name, spend: 0, clicks: 0, impressions: 0, conv: 0 };
+                    map[name].spend += safeNum(i.spend || i.cost);
+                    map[name].clicks += safeNum(i.clicks);
+                    map[name].impressions += safeNum(i.impressions);
+                    map[name].conv += convOf(i, cfg);
                 });
-                return tree;
+                return Object.values(map).map(r => {
+                    r.ctr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0;
+                    r.cpa = r.conv > 0 ? r.spend / r.conv : null;
+                    r.isActive = r.spend > 0;
+                    return r;
+                });
             }
 
-            function metricsRow(m) {
-                let ctr = m.impressions > 0 ? (m.clicks / m.impressions) * 100 : 0;
-                let cpa = m.conv > 0 ? m.spend / m.conv : null;
-                return { ctr, cpa };
+            function getExplorerRows() {
+                const cfg = platformCfg(explorerState.platform);
+                const fullList = filterByDate(globalData[cfg.dataKey]);
+                let rows = [];
+
+                if (explorerState.level === 'campaigns') {
+                    rows = aggregateRows(fullList, campaignOf, cfg);
+                } else if (explorerState.level === 'adsets') {
+                    let scoped = explorerState.selectedCampaign
+                        ? fullList.filter(i => campaignOf(i) === explorerState.selectedCampaign)
+                        : fullList;
+                    rows = aggregateRows(scoped, groupOf, cfg);
+                } else {
+                    let scoped = fullList;
+                    if (explorerState.selectedCampaign) scoped = scoped.filter(i => campaignOf(i) === explorerState.selectedCampaign);
+                    if (explorerState.selectedGroup) scoped = scoped.filter(i => groupOf(i) === explorerState.selectedGroup);
+                    rows = aggregateRows(scoped, adOf, cfg);
+                }
+
+                if (explorerState.search.trim()) {
+                    const q = explorerState.search.trim().toLowerCase();
+                    rows = rows.filter(r => r.name.toLowerCase().includes(q));
+                }
+
+                rows.sort((a, b) => {
+                    let av = a[explorerState.sortKey];
+                    let bv = b[explorerState.sortKey];
+                    if (av === null) av = -1;
+                    if (bv === null) bv = -1;
+                    if (typeof av === 'string') return av.localeCompare(bv) * explorerState.sortDir;
+                    return (av - bv) * explorerState.sortDir;
+                });
+
+                return rows;
             }
 
-            function renderHierarchicalTables(metaList, tiktokList, googleList) {
-                const container = document.getElementById('campaigns-tables-container');
-                container.innerHTML = '';
+            function levelCount(levelKey) {
+                const prevLevel = explorerState.level;
+                explorerState.level = levelKey;
+                const rows = getExplorerRows();
+                explorerState.level = prevLevel;
+                return rows.length;
+            }
 
-                const buildPlatformTreeHtml = (title, list, convLabel, platformKey, dotColor, isMeta = false, isGoogle = false) => {
-                    if (list.length === 0) return '';
-                    let tree = groupByTree(list, isMeta, isGoogle);
-                    let rowsHtml = '';
-                    let cIndex = 0;
+            function renderExplorer() {
+                renderPlatformTabs();
+                renderLevelTabs();
+                renderFilterChips();
+                renderTableHead();
+                renderTableBody();
+            }
 
-                    for (let cName in tree) {
-                        cIndex++;
-                        let camp = tree[cName];
-                        let campId = `${platformKey}-c-${cIndex}`;
-                        let campM = metricsRow(camp);
+            function renderPlatformTabs() {
+                const el = document.getElementById('platform-tabs');
+                el.innerHTML = PLATFORMS.map(p => `
+                    <div class="platform-tab ${explorerState.platform === p.key ? 'active' : ''}" onclick="setPlatform('${p.key}')">
+                        <span class="pdot" style="background:${p.dot}"></span>${p.label}
+                    </div>
+                `).join('');
+            }
 
-                        rowsHtml += `
-                            <tr class="row-campaign" onclick="toggleRow('${campId}', this)" id="header-${campId}">
-                                <td><span class="chevron">${chevronSvg()}</span><span class="name-icon">📂</span> ${cName}</td>
-                                <td>${camp.spend.toFixed(2)} ر.س</td>
-                                <td>${camp.impressions.toLocaleString('ar-SA')}</td>
-                                <td>${camp.clicks.toLocaleString('ar-SA')}</td>
-                                <td>${campM.ctr.toFixed(1)}%</td>
-                                <td>${campM.cpa !== null ? campM.cpa.toFixed(2) + ' ر.س' : '--'}</td>
-                                <td>${camp.conv}</td>
-                            </tr>
-                        `;
+            function renderLevelTabs() {
+                const el = document.getElementById('level-tabs');
+                el.innerHTML = LEVELS.map(l => `
+                    <div class="level-tab ${explorerState.level === l.key ? 'active' : ''}" onclick="setLevel('${l.key}')">
+                        <span class="tab-count">${levelCount(l.key)}</span>${l.label}
+                    </div>
+                `).join('');
+            }
 
-                        let gIndex = 0;
-                        for (let gName in camp.groups) {
-                            gIndex++;
-                            let group = camp.groups[gName];
-                            let groupId = `${campId}-g-${gIndex}`;
-                            let groupM = metricsRow(group);
+            function renderFilterChips() {
+                const el = document.getElementById('filter-chips');
+                let chips = '';
+                if (explorerState.selectedCampaign) {
+                    chips += `<span class="filter-chip">الحملة: ${explorerState.selectedCampaign}<button onclick="clearCampaign()">✕</button></span>`;
+                }
+                if (explorerState.selectedGroup) {
+                    chips += `<span class="filter-chip">المجموعة: ${explorerState.selectedGroup}<button onclick="clearGroup()">✕</button></span>`;
+                }
+                el.innerHTML = chips;
+                el.style.display = chips ? 'flex' : 'none';
+            }
 
-                            rowsHtml += `
-                                <tr class="row-adgroup ${campId}" onclick="toggleRow('${groupId}', this)" id="header-${groupId}">
-                                    <td><span class="chevron">${chevronSvg()}</span><span class="name-icon">📁</span> المجموعة: ${gName}</td>
-                                    <td>${group.spend.toFixed(2)} ر.س</td>
-                                    <td>${group.impressions.toLocaleString('ar-SA')}</td>
-                                    <td>${group.clicks.toLocaleString('ar-SA')}</td>
-                                    <td>${groupM.ctr.toFixed(1)}%</td>
-                                    <td>${groupM.cpa !== null ? groupM.cpa.toFixed(2) + ' ر.س' : '--'}</td>
-                                    <td>${group.conv}</td>
-                                </tr>
-                            `;
+            function sortIco(key) {
+                if (explorerState.sortKey !== key) return '↕';
+                return explorerState.sortDir === 1 ? '↑' : '↓';
+            }
 
-                            for (let aName in group.ads) {
-                                let ad = group.ads[aName];
-                                let adM = metricsRow(ad);
-                                let badgeHtml = tierBadge(adM.ctr);
+            function renderTableHead() {
+                const cfg = platformCfg(explorerState.platform);
+                const head = document.getElementById('table-head');
+                const cols = [
+                    { key: null, label: '', sortable: false },
+                    { key: 'name', label: 'الاسم', sortable: true },
+                    { key: 'isActive', label: 'حالة العرض', sortable: true },
+                    { key: 'conv', label: cfg.resultLabel, sortable: true },
+                    { key: 'cpa', label: 'التكلفة لكل نتيجة', sortable: true },
+                    { key: 'spend', label: 'المبلغ الذي تم إنفاقه', sortable: true },
+                    { key: 'impressions', label: 'الظهور', sortable: true },
+                    { key: 'clicks', label: 'النقرات', sortable: true },
+                    { key: 'ctr', label: 'CTR', sortable: true }
+                ];
+                head.innerHTML = cols.map(c => {
+                    if (!c.sortable) return `<th class="no-sort">${c.label}</th>`;
+                    const sorted = explorerState.sortKey === c.key ? 'sorted' : '';
+                    return `<th class="${sorted}" onclick="sortBy('${c.key}')">${c.label} <span class="sort-ico">${sortIco(c.key)}</span></th>`;
+                }).join('');
+            }
 
-                                rowsHtml += `
-                                    <tr class="row-ad ${campId} ${groupId}">
-                                        <td><span class="name-icon">🎯</span> ${aName} ${badgeHtml}</td>
-                                        <td>${ad.spend.toFixed(2)} ر.س</td>
-                                        <td>${ad.impressions.toLocaleString('ar-SA')}</td>
-                                        <td>${ad.clicks.toLocaleString('ar-SA')}</td>
-                                        <td>${adM.ctr.toFixed(1)}%</td>
-                                        <td>${adM.cpa !== null ? adM.cpa.toFixed(2) + ' ر.س' : '--'}</td>
-                                        <td>${ad.conv}</td>
-                                    </tr>
-                                `;
-                            }
-                        }
-                    }
+            function renderTableBody() {
+                const cfg = platformCfg(explorerState.platform);
+                const rows = getExplorerRows();
+                const body = document.getElementById('table-body');
+                const isLeaf = explorerState.level === 'ads';
+
+                if (rows.length === 0) {
+                    body.innerHTML = `<tr><td colspan="9"><div class="empty-state">لا توجد بيانات مطابقة لهذه الفترة أو الفلتر الحالي</div></td></tr>`;
+                    return;
+                }
+
+                const icon = explorerState.level === 'campaigns' ? '📂' : (explorerState.level === 'adsets' ? '📁' : '🎯');
+
+                body.innerHTML = rows.map(r => {
+                    const cpaText = r.cpa !== null ? r.cpa.toFixed(2) + ' ر.س' : '--';
+                    const badge = isLeaf ? ' ' + tierBadge(r.ctr) : '';
+                    const clickAttr = isLeaf ? '' : `onclick="drillInto('${r.name.replace(/'/g, "\\'")}')"`;
+                    const rowClass = isLeaf ? 'data-row' : 'data-row clickable';
 
                     return `
-                        <div class="platform-card">
-                            <div class="platform-header"><span class="platform-dot" style="background:${dotColor}"></span>${title}</div>
-                            <div class="table-scroll">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>اسم الحملة / المجموعة / الإعلان</th>
-                                        <th>الإنفاق</th>
-                                        <th>الظهور</th>
-                                        <th>النقرات</th>
-                                        <th>CTR</th>
-                                        <th>تكلفة/نتيجة</th>
-                                        <th>${convLabel}</th>
-                                    </tr>
-                                </thead>
-                                <tbody>${rowsHtml}</tbody>
-                            </table>
-                            </div>
-                        </div>
+                        <tr class="${rowClass}" ${clickAttr}>
+                            <td>
+                                <label class="toggle-switch" title="حالة تقديرية للقراءة فقط بناءً على النشاط خلال الفترة المحددة">
+                                    <input type="checkbox" ${r.isActive ? 'checked' : ''} disabled>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </td>
+                            <td>
+                                <div class="name-cell">
+                                    <span class="name-icon">${icon}</span>
+                                    <span>${r.name}</span>
+                                    ${badge}
+                                    ${!isLeaf ? '<span class="drill-arrow">‹</span>' : ''}
+                                </div>
+                            </td>
+                            <td>
+                                <span class="status-pill ${r.isActive ? 'status-active' : 'status-paused'}">
+                                    <span class="status-dot"></span>${r.isActive ? 'نشطة' : 'متوقفة'}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="metric-main">${r.conv.toLocaleString('en-US')}</div>
+                                <div class="metric-sub">${cfg.resultSub}</div>
+                            </td>
+                            <td>${cpaText}</td>
+                            <td>${r.spend.toFixed(2)} ر.س</td>
+                            <td>${r.impressions.toLocaleString('en-US')}</td>
+                            <td>${r.clicks.toLocaleString('en-US')}</td>
+                            <td>${r.ctr.toFixed(1)}%</td>
+                        </tr>
                     `;
-                };
-
-                let html = buildPlatformTreeHtml('Meta Ads', metaList, 'المحادثات/النتائج', 'meta', '#0284c7', true, false);
-                html += buildPlatformTreeHtml('TikTok Ads', tiktokList, 'التحويلات/المؤشرات', 'tiktok', '#f05a28', false, false);
-                html += buildPlatformTreeHtml('Google Ads', googleList, 'الإحالات', 'google', '#0f2540', false, true);
-
-                container.innerHTML = html || '<div class="platform-card"><div class="empty-state">لا توجد بيانات متاحة لهذه الفترة</div></div>';
+                }).join('');
             }
 
-            function chevronSvg() {
-                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>';
+            function setPlatform(key) {
+                explorerState.platform = key;
+                explorerState.level = 'campaigns';
+                explorerState.selectedCampaign = null;
+                explorerState.selectedGroup = null;
+                explorerState.search = '';
+                document.getElementById('search-input').value = '';
+                renderExplorer();
             }
 
-            function toggleRow(targetClass, headerEl) {
-                let rows = document.getElementsByClassName(targetClass);
-                let header = document.getElementById(`header-${targetClass}`);
-                let isExpanding = false;
+            function setLevel(key) {
+                explorerState.level = key;
+                if (key === 'campaigns') { explorerState.selectedCampaign = null; explorerState.selectedGroup = null; }
+                if (key === 'adsets') { explorerState.selectedGroup = null; }
+                renderExplorer();
+            }
 
-                if (header) {
-                    header.classList.toggle('expanded');
-                    isExpanding = header.classList.contains('expanded');
-                    const chev = header.querySelector('.chevron');
-                    if (chev) chev.style.transform = isExpanding ? 'rotate(0deg)' : 'rotate(-90deg)';
+            function drillInto(name) {
+                if (explorerState.level === 'campaigns') {
+                    explorerState.selectedCampaign = name;
+                    explorerState.selectedGroup = null;
+                    explorerState.level = 'adsets';
+                } else if (explorerState.level === 'adsets') {
+                    explorerState.selectedGroup = name;
+                    explorerState.level = 'ads';
                 }
+                renderExplorer();
+            }
 
-                for (let row of rows) {
-                    if (isExpanding) {
-                        if (row.classList.contains('row-adgroup') || (header && header.classList.contains('row-adgroup') && row.classList.contains('row-ad'))) {
-                            row.style.display = 'table-row';
-                        }
-                    } else {
-                        row.style.display = 'none';
-                        row.classList.remove('expanded');
-                        const innerChev = row.querySelector('.chevron');
-                        if (innerChev) innerChev.style.transform = 'rotate(-90deg)';
-                    }
+            function clearCampaign() {
+                explorerState.selectedCampaign = null;
+                explorerState.selectedGroup = null;
+                explorerState.level = 'campaigns';
+                renderExplorer();
+            }
+
+            function clearGroup() {
+                explorerState.selectedGroup = null;
+                explorerState.level = 'adsets';
+                renderExplorer();
+            }
+
+            function sortBy(key) {
+                if (explorerState.sortKey === key) {
+                    explorerState.sortDir *= -1;
+                } else {
+                    explorerState.sortKey = key;
+                    explorerState.sortDir = -1;
                 }
+                renderExplorer();
+            }
+
+            function onSearch(val) {
+                explorerState.search = val;
+                renderExplorer();
+            }
+
+            function notImplementedYet() {
+                showToast('هذه الميزة قيد التطوير قريباً ⏳');
+            }
+
+            function exportCsv() {
+                const cfg = platformCfg(explorerState.platform);
+                const rows = getExplorerRows();
+                if (rows.length === 0) { showToast('لا توجد بيانات لتصديرها'); return; }
+
+                const headers = ['الاسم', 'الحالة', cfg.resultLabel, 'التكلفة لكل نتيجة', 'الإنفاق', 'الظهور', 'النقرات', 'CTR'];
+                const lines = [headers.join(',')];
+                rows.forEach(r => {
+                    const line = [
+                        `"${r.name.replace(/"/g, '""')}"`,
+                        r.isActive ? 'نشطة' : 'متوقفة',
+                        r.conv,
+                        r.cpa !== null ? r.cpa.toFixed(2) : '',
+                        r.spend.toFixed(2),
+                        r.impressions,
+                        r.clicks,
+                        r.ctr.toFixed(1)
+                    ].join(',');
+                    lines.push(line);
+                });
+
+                const csvContent = '\ufeff' + lines.join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `elevenz-${explorerState.platform}-${explorerState.level}-${currentTimeRange}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('تم تصدير الملف بنجاح! 📁');
             }
 
             function setTimeRange(range, btn) {
@@ -918,12 +1192,11 @@ async def serve_index():
                 updateDashboardUI();
             }
 
-            function fmt(n) { return (Math.round(n * 100) / 100).toLocaleString('ar-SA'); }
+            function fmt(n) { return (Math.round(n * 100) / 100).toLocaleString('en-US'); }
 
             function copyReport() {
                 if (!lastMetrics) return;
                 const m = lastMetrics;
-                const line = '—'.repeat(1);
                 const text =
 `📊 *تقرير أداء الإعلانات - elevenz*
 🗓️ الفترة: ${m.timeText}
@@ -933,19 +1206,19 @@ async def serve_index():
 
 📘 *Meta Ads*
 • الإنفاق: ${fmt(m.metaSpend)} ر.س
-• النتائج: ${m.metaConv.toLocaleString('ar-SA')}
+• النتائج: ${m.metaConv.toLocaleString('en-US')}
 • CTR: ${m.metaCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.metaCpa !== null ? fmt(m.metaCpa) + ' ر.س' : '--'}
 
 🎵 *TikTok Ads*
 • الإنفاق: ${fmt(m.tiktokSpend)} ر.س
-• التحويلات: ${m.tiktokConv.toLocaleString('ar-SA')}
+• التحويلات: ${m.tiktokConv.toLocaleString('en-US')}
 • CTR: ${m.tiktokCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.tiktokCpa !== null ? fmt(m.tiktokCpa) + ' ر.س' : '--'}
 
 🔍 *Google Ads*
 • الإنفاق: ${fmt(m.googleSpend)} ر.س
-• الإحالات: ${m.googleConv.toLocaleString('ar-SA')}
+• الإحالات: ${m.googleConv.toLocaleString('en-US')}
 • CTR: ${m.googleCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.googleCpa !== null ? fmt(m.googleCpa) + ' ر.س' : '--'}
 
