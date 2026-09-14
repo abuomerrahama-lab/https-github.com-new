@@ -1,18 +1,3 @@
-سبب عدم اكتمال الصفحة والتصميم الواسع جدًا يرجع إلى **حذف الـ HTML الأساسي والهيكل التنظيمي (Grid/Flex) وتنسيقات CSS التي كانت ترتب البطاقات وتضبط عرض الصفحة** أثناء عملية تعديل الكود، حيث اقتصر الـ HTML المكتوب في الكود الأخير على بطاقة واحدة موحدة فقط بدلاً من تخطيط اللوحة الكامل.
-
-تكمن التغيرات التي أدت إلى هذا الشكل في التالي:
-
-* **حذف شبكة العرض (Grid Layout):** تم إلغاء التنسيقات التي تمنع البطاقة من التمدد على كامل بعرض الشاشة (`max-width` و `margin: auto`).
-* **إزالة باقي المنصات:** تم إغفال البطاقات الخاصة بـ TikTok Ads و Google Ads وإلغاء شريط العنوان العلوي (Header) وزر تحديد التواريخ.
-* **غياب الحاوية المركزية (Dashboard Container):** أصبحت البطاقة تتمدد بعرض الشاشة بالكامل بدون حدود أو مسافات جانبية متناسقة.
-
----
-
-### الكود المكتمل مع التنسيق الهيكلي (Dashboard Layout)
-
-إليك الكود بعد إعادة بناء واجهة المستخدم الكاملة، مع إضافة شبكة البطاقات (Meta, TikTok, Google)، والشريط العلوي، وتنسيق الأحجام لكي لا تظهر البطاقة متمددة بشكل مشوه:
-
-```python
 import os
 import asyncio
 import logging
@@ -247,7 +232,7 @@ async def serve_index():
                     const json = await res.json();
                     if (json.status === 'success' && json.data) {
                         
-                        // Meta Ads Processing
+                        // Meta Ads
                         const meta = json.data.meta_ads || [];
                         let mSpend = 0, mClicks = 0, mImp = 0, mConvs = 0;
                         meta.forEach(r => {
@@ -261,7 +246,7 @@ async def serve_index():
                         document.getElementById('meta-ctr').innerText = (mImp > 0 ? (mClicks / mImp * 100).toFixed(2) : '0.00') + '%';
                         document.getElementById('meta-cpa').innerText = (mConvs > 0 ? (mSpend / mConvs).toFixed(2) : '0.00') + ' ر.س';
 
-                        // TikTok Ads Processing
+                        // TikTok Ads
                         const tiktok = json.data.tiktok_ads || [];
                         let tSpend = 0, tClicks = 0, tImp = 0, tConvs = 0;
                         tiktok.forEach(r => {
@@ -275,7 +260,7 @@ async def serve_index():
                         document.getElementById('tiktok-ctr').innerText = (tImp > 0 ? (tClicks / tImp * 100).toFixed(2) : '0.00') + '%';
                         document.getElementById('tiktok-cpa').innerText = (tConvs > 0 ? (tSpend / tConvs).toFixed(2) : '0.00') + ' ر.س';
 
-                        // Google Ads Processing
+                        // Google Ads
                         const google = json.data.google_ads || [];
                         let gSpend = 0, gClicks = 0, gImp = 0, gConvs = 0;
                         google.forEach(r => {
@@ -300,7 +285,3 @@ async def serve_index():
     </html>
     """
     return HTMLResponse(content=html_content)
-
-```
-
-بامكانك إعادة رفع الكود الحالي وستعود الصفحة محددة العرض ومنظمة بـ 3 بطاقات متناسقة لكل منصة.
