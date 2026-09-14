@@ -9,13 +9,37 @@ from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ads-dashboard")
+
+# ===== تحديد معدل الطلبات (اختياري بأمان) =====
+# slowapi مكتبة خارجية يجب إضافتها إلى requirements.txt على Render (راجع رسالة
+# التسليم). إن نُسيت أو تعذّر تثبيتها لأي سبب، لا يجب أن يتوقف التطبيق بالكامل
+# عن العمل بسبب ميزة حماية إضافية واحدة - لذلك نستورد بأمان، وإن فشل الاستيراد
+# نُفعّل بديلاً وهمياً (No-Op) يُعطّل تحديد المعدل فقط مع تحذير واضح في السجلات،
+# بينما تستمر بقية اللوحة (المصادقة، CORS، الترويسات، البيانات) بالعمل طبيعياً.
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    SLOWAPI_AVAILABLE = True
+except ImportError:
+    SLOWAPI_AVAILABLE = False
+
+    class _NoOpLimiter:
+        """بديل آمن عند غياب slowapi: `@limiter.limit(...)` يُصبح ديكوراتور
+        شفّاف لا يفعل شيئاً (لا يحدّ من شيء)، بدل أن يُسقط التطبيق بالكامل."""
+        def limit(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+    Limiter = None
+    get_remote_address = None
+    RateLimitExceeded = Exception  # نوع استثناء بديل غير قابل للحدوث فعلياً
+    _rate_limit_exceeded_handler = None
 
 CACHE: Dict[str, Any] = {
     "meta_ads": [],
@@ -78,7 +102,14 @@ if RENDER_EXTERNAL_URL:
     _allowed_origins.append(RENDER_EXTERNAL_URL.rstrip("/"))
 
 # ===== تحديد معدل الطلبات (Rate Limiting) =====
-limiter = Limiter(key_func=get_remote_address)
+if SLOWAPI_AVAILABLE:
+    limiter = Limiter(key_func=get_remote_address)
+else:
+    logger.warning(
+        "⚠️ مكتبة slowapi غير مثبّتة - تحديد معدل الطلبات معطّل مؤقتاً. "
+        "أضف 'slowapi' إلى requirements.txt على Render وأعد النشر لتفعيله."
+    )
+    limiter = _NoOpLimiter()
 
 # حقول أساسية ومضمونة الدعم في موصلات Windsor.ai (مرجع واحد يُستخدم في
 # حلقة التحديث ونقطة التشخيص معاً لتفادي أي تعارض بين المكانين)
@@ -272,7 +303,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="منصة إعلانات elevenz", lifespan=lifespan)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+if SLOWAPI_AVAILABLE:
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
