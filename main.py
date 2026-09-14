@@ -1003,20 +1003,45 @@ async def serve_index():
                 return isNaN(n) ? 0 : n;
             }
 
+            // أنواع الأحداث الخاصة بمحادثات الرسائل على ميتا مرتبة بحسب الأولوية.
+            // هذه المراحل الثلاثة تُمثّل نفس قمع المحادثة (بدء → رد أول → اتصال مكتمل)
+            // وليست نتائج منفصلة - لذلك يجب أخذ واحدة منها فقط وليس جمعها معاً.
+            const META_MESSAGING_ACTION_PRIORITY = [
+                'onsite_conversion.messaging_conversation_started_7d',
+                'onsite_conversion.total_messaging_connection',
+                'onsite_conversion.messaging_first_reply'
+            ];
+
             function parseMetaConversions(item) {
                 if (!item) return 0;
-                let res = safeNum(item.conversions || item.results || item.onsite_conversion_messaging_conversation_started_7d);
-                if (res > 0) return res;
+
+                // 1) إن كان حقل conversions القياسي أكبر من صفر، اعتمده مباشرة (هذا يغطي
+                //    حملات أهداف الشراء/التحويل القياسية التي تملأ ميتا هذا الحقل لها فعلياً)
+                const standardConv = safeNum(item.conversions || item.results);
+                if (standardConv > 0) return standardConv;
+
+                // 2) حملات المراسلة/الرسائل عادة لا تملأ حقل conversions، فنستخرج النتيجة
+                //    من actions بدلاً من ذلك
                 if (item.actions && Array.isArray(item.actions)) {
-                    let total = 0;
-                    item.actions.forEach(act => {
-                        if (act.action_type && (act.action_type.includes('message') || act.action_type.includes('conversation') || act.action_type.includes('lead'))) {
-                            total += safeNum(act.value);
-                        }
-                    });
-                    if (total > 0) return total;
+                    // طابق أحد الأنواع القياسية المعروفة بالضبط (وليس بالاحتواء الجزئي)
+                    // حتى لا نخلط بين مراحل قمع المحادثة نفسها أو مع أحداث لا علاقة لها
+                    // (مثل "lead" من هدف إعلاني مختلف) ونجمعها خطأً كنتائج مضاعفة.
+                    for (const actionType of META_MESSAGING_ACTION_PRIORITY) {
+                        const match = item.actions.find(act => act.action_type === actionType);
+                        if (match) return safeNum(match.value);
+                    }
+                    // لم يُعثر على أي من الأنواع القياسية أعلاه: خذ أعلى قيمة مفردة من
+                    // الأحداث المتعلقة بالمراسلة/المحادثة دون جمعها (Math.max وليس +=)
+                    // لتفادي مضاعفة الرقم في حال وجود أكثر من حدث متشابه بنفس الصف.
+                    const relevant = item.actions.filter(act =>
+                        act.action_type && (act.action_type.includes('messaging') || act.action_type.includes('conversation'))
+                    );
+                    if (relevant.length > 0) {
+                        return Math.max(...relevant.map(act => safeNum(act.value)));
+                    }
                 }
-                return safeNum(item.actions);
+
+                return 0;
             }
 
             function parseGoogleConversions(item) {
