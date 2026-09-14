@@ -109,6 +109,56 @@ async def fetch_windsor_connector(connector: str, params: dict) -> list:
         logger.error(f"خطأ غير متوقع أثناء جلب بيانات '{connector}': {e}")
         return []
 
+
+# حقول "الحالة الفعلية" (نشطة/متوقفة) من كل منصة. جميع الأسماء أدناه مؤكدة
+# 100% (وليست تخميناً) بعد التحقق المباشر من حساب Windsor.ai الفعلي للمستخدم
+# عبر أداة get_fields لكل موصل (Meta, TikTok, Google Ads) بتاريخ هذا التحديث.
+# يبقى نظام "المستويات" (Tiers) قائماً كطبقة أمان إضافية فقط - وليس لأن الأسماء
+# مشكوك فيها - بحيث لو مُنعت إحدى الحقول لسبب خاص بحساب أو باقة معينة، يتراجع
+# النظام تلقائياً دون أي تأثير على بيانات الأداء الأساسية.
+CONNECTOR_STATUS_FIELD_TIERS = {
+    "facebook": [
+        "campaign_status,adset_status,effective_status",
+        "",
+    ],
+    "tiktok": [
+        # مؤكدة جميعها عبر get_fields: campaign_operation_status/ad_group_operation_status/
+        # ad_operation_status تُرجع Enum نظيف (ENABLE/DISABLE/FROZEN)، والحقول الثلاثة
+        # الأخرى نصية عامة (Campaign/Adgroup/Ad Status) كبديل احتياطي إضافي بنفس الطلب
+        "campaign_operation_status,ad_group_operation_status,ad_operation_status,campaign_status,adgroup_status,ad_status",
+        "",
+    ],
+    "google_ads": [
+        "campaign_status,ad_group_status,ad_group_ad_status",
+        "",
+    ],
+}
+
+
+async def fetch_platform_data(connector: str, date_from: str, date_to: str) -> list:
+    """يجلب بيانات المنصة، ويحاول تضمين حقول الحالة الفعلية (نشطة/متوقفة) من
+    Windsor.ai متى أمكن، بتجربة عدة مجموعات حقول تلقائياً من الأكثر اكتمالاً
+    إلى الأكثر أماناً. إن فشلت كل المحاولات التي تتضمن حقول حالة (بسبب اسم حقل
+    غير مدعوم لهذا الحساب تحديداً) يعود تلقائياً لجلب الحقول الأساسية فقط دون أي
+    تأثير على صحة بيانات الأداء (الإنفاق/النقرات/الظهور...) نفسها."""
+    base_fields = CONNECTOR_FIELDS[connector]
+    tiers = CONNECTOR_STATUS_FIELD_TIERS.get(connector, [""])
+
+    for tier_fields in tiers:
+        combined_fields = f"{base_fields},{tier_fields}" if tier_fields else base_fields
+        rows = await fetch_windsor_connector(connector, {
+            "fields": combined_fields, "date_from": date_from, "date_to": date_to
+        })
+        if rows:
+            if tier_fields:
+                logger.info(f"موصل '{connector}': نجح جلب حقول الحالة ({tier_fields})")
+            return rows
+        elif tier_fields:
+            logger.warning(f"موصل '{connector}': لم تُرجع حقول الحالة ({tier_fields}) بيانات، تجربة مجموعة أبسط...")
+
+    return []
+
+
 async def refresh_cache_and_keep_alive():
     global CACHE
     while True:
@@ -117,9 +167,9 @@ async def refresh_cache_and_keep_alive():
             logger.info(f"جاري تحديث بيانات إعلانات elevenz... (النطاق الزمني: {date_from} إلى {date_to})")
 
             meta_res, tiktok_res, google_res = await asyncio.gather(
-                fetch_windsor_connector("facebook", {"fields": CONNECTOR_FIELDS["facebook"]}),
-                fetch_windsor_connector("tiktok", {"fields": CONNECTOR_FIELDS["tiktok"]}),
-                fetch_windsor_connector("google_ads", {"fields": CONNECTOR_FIELDS["google_ads"]}),
+                fetch_platform_data("facebook", date_from, date_to),
+                fetch_platform_data("tiktok", date_from, date_to),
+                fetch_platform_data("google_ads", date_from, date_to),
                 return_exceptions=True
             )
 
@@ -155,14 +205,18 @@ async def get_status():
     return {"status": "ok"}
 
 @app.get("/api/debug/windsor")
-async def debug_windsor(connector: str = "facebook"):
+async def debug_windsor(connector: str = "facebook", include_status: bool = False):
     """نقطة تشخيص: تنفّذ نفس طلب Windsor.ai المستخدم في التحديث التلقائي
     وتُرجع الاستجابة الخام (رمز الحالة + نص الاستجابة) دون الحاجة لقراءة
     سجلات (Logs) Render. افتح مباشرة في المتصفح:
     /api/debug/windsor?connector=facebook
     /api/debug/windsor?connector=tiktok
     /api/debug/windsor?connector=google_ads
-    مفتاح الـ API لا يظهر أبداً في الاستجابة."""
+
+    أضف include_status=true لاختبار حقول "الحالة الفعلية" (نشطة/متوقفة) تحديداً،
+    مثال: /api/debug/windsor?connector=tiktok&include_status=true
+    سيُعيد نتيجة كل مستوى (Tier) من حقول الحالة على حدة، لمعرفة أيها مدعوم فعلياً
+    لحسابك. مفتاح الـ API لا يظهر أبداً في الاستجابة."""
     if connector not in CONNECTOR_FIELDS:
         return JSONResponse(content={
             "error": f"موصل غير معروف: '{connector}'",
@@ -175,53 +229,65 @@ async def debug_windsor(connector: str = "facebook"):
                      "أضِفه من إعدادات الخدمة (Environment) ثم أعد النشر."
         })
 
-    fields = CONNECTOR_FIELDS[connector]
     date_from, date_to = get_default_date_range()
     url = f"https://connectors.windsor.ai/{connector}"
-    params = {
-        "api_key": WINDSOR_API_KEY,
-        "_renderer": "json",
-        "date_from": date_from,
-        "date_to": date_to,
-        "fields": fields,
-    }
-    masked_url = (
-        f"{url}?api_key=***&_renderer=json&date_from={date_from}"
-        f"&date_to={date_to}&fields={fields}"
-    )
+    base_fields = CONNECTOR_FIELDS[connector]
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            res = await client.get(url, params=params)
-
+    async def try_fields(fields: str):
+        params = {
+            "api_key": WINDSOR_API_KEY, "_renderer": "json",
+            "date_from": date_from, "date_to": date_to, "fields": fields,
+        }
+        masked_url = (
+            f"{url}?api_key=***&_renderer=json&date_from={date_from}"
+            f"&date_to={date_to}&fields={fields}"
+        )
         try:
-            parsed = res.json()
-        except Exception:
-            parsed = None
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                res = await client.get(url, params=params)
+            try:
+                parsed = res.json()
+            except Exception:
+                parsed = None
+            row_count = None
+            if isinstance(parsed, dict) and isinstance(parsed.get("data"), list):
+                row_count = len(parsed["data"])
+            elif isinstance(parsed, list):
+                row_count = len(parsed)
+            return {
+                "fields_requested": fields,
+                "request_url_masked": masked_url,
+                "status_code": res.status_code,
+                "row_count": row_count,
+                "raw_body_preview": res.text[:1500],
+            }
+        except Exception as e:
+            return {"fields_requested": fields, "request_url_masked": masked_url, "error": str(e)}
 
-        row_count = None
-        if isinstance(parsed, dict) and isinstance(parsed.get("data"), list):
-            row_count = len(parsed["data"])
-        elif isinstance(parsed, list):
-            row_count = len(parsed)
-
+    if include_status:
+        tiers = CONNECTOR_STATUS_FIELD_TIERS.get(connector, [""])
+        attempts = []
+        for tier_fields in tiers:
+            combined = f"{base_fields},{tier_fields}" if tier_fields else base_fields
+            result = await try_fields(combined)
+            result["tier_status_fields"] = tier_fields or "(بلا حقول حالة - الأساس فقط)"
+            attempts.append(result)
         return JSONResponse(content={
             "connector": connector,
-            "request_url_masked": masked_url,
-            "status_code": res.status_code,
             "date_from": date_from,
             "date_to": date_to,
-            "fields_requested": fields,
-            "row_count": row_count,
-            "parsed_json": parsed,
-            "raw_body_preview": res.text[:3000],
+            "base_fields": base_fields,
+            "status_field_tiers_tested": attempts,
         })
-    except Exception as e:
-        return JSONResponse(content={
-            "connector": connector,
-            "request_url_masked": masked_url,
-            "error": str(e)
-        })
+
+    result = await try_fields(base_fields)
+    return JSONResponse(content={
+        "connector": connector,
+        "date_from": date_from,
+        "date_to": date_to,
+        **result,
+        "parsed_json": None,
+    })
 
 def _valid_iso_date(value: str) -> bool:
     try:
@@ -257,15 +323,9 @@ async def get_dashboard_data(date_from: str = None, date_to: str = None):
     logger.info(f"طلب نطاق مخصص من الواجهة: {date_from} إلى {date_to}")
 
     meta_res, tiktok_res, google_res = await asyncio.gather(
-        fetch_windsor_connector("facebook", {
-            "fields": CONNECTOR_FIELDS["facebook"], "date_from": date_from, "date_to": date_to
-        }),
-        fetch_windsor_connector("tiktok", {
-            "fields": CONNECTOR_FIELDS["tiktok"], "date_from": date_from, "date_to": date_to
-        }),
-        fetch_windsor_connector("google_ads", {
-            "fields": CONNECTOR_FIELDS["google_ads"], "date_from": date_from, "date_to": date_to
-        }),
+        fetch_platform_data("facebook", date_from, date_to),
+        fetch_platform_data("tiktok", date_from, date_to),
+        fetch_platform_data("google_ads", date_from, date_to),
         return_exceptions=True
     )
 
@@ -987,6 +1047,44 @@ async def serve_index():
                 { key: 'ads', label: 'الإعلانات' }
             ];
 
+            // خريطة أسماء حقول "الحالة الفعلية" المحتملة لكل منصة ومستوى، بترتيب
+            // الأولوية. كل الأسماء أدناه مؤكدة (تم التحقق المباشر من حساب Windsor.ai
+            // الفعلي عبر get_fields وليست تخميناً)، وتُفحص بالترتيب حتى يُعثر على أول
+            // حقل يحمل قيمة فعلية في الصف - هذا يجعل الواجهة تعمل بشكل صحيح بغض النظر
+            // عن أي مستوى (Tier) من حقول الحالة استخدمه الباك إند فعلياً في هذا الطلب.
+            const STATUS_FIELD_MAP = {
+                meta: {
+                    campaigns: ['campaign_status'],
+                    adsets: ['adset_status'],
+                    ads: ['effective_status']
+                },
+                tiktok: {
+                    campaigns: ['campaign_operation_status', 'campaign_status'],
+                    adsets: ['ad_group_operation_status', 'adgroup_status'],
+                    ads: ['ad_operation_status', 'ad_status']
+                },
+                google: {
+                    campaigns: ['campaign_status'],
+                    adsets: ['ad_group_status'],
+                    ads: ['ad_group_ad_status']
+                }
+            };
+
+            // يحوّل قيمة حالة خام (من أي من المنصات الثلاث، بأي تهجئة شائعة) إلى
+            // true (نشطة) / false (متوقفة) / null (قيمة غير معروفة - تجاهلها).
+            function normalizeStatusValue(raw) {
+                if (raw === null || raw === undefined || raw === '') return null;
+                const s = String(raw).trim().toUpperCase();
+                if (!s) return null;
+                // علامات الإيقاف تُفحص أولاً (بالاحتواء) لأنها أكثر تحديداً، ولتفادي
+                // تطابق زائف مثل "NOT_ELIGIBLE" مع كلمة "ELIGIBLE" التي تعني نشطة
+                const PAUSED_MARKERS = ['NOT_ELIGIBLE', 'PAUSE', 'DISABLE', 'FROZEN', 'ARCHIVED', 'DELETED', 'REMOVED', 'ENDED', 'REJECTED', 'INACTIVE', 'LIMITED'];
+                if (PAUSED_MARKERS.some(marker => s.includes(marker))) return false;
+                const ACTIVE_MARKERS = ['ACTIVE', 'ENABLE', 'RUNNING', 'ELIGIBLE'];
+                if (ACTIVE_MARKERS.some(marker => s.includes(marker))) return true;
+                return null;
+            }
+
             let explorerState = {
                 platform: 'meta',
                 level: 'campaigns',
@@ -1425,20 +1523,43 @@ async def serve_index():
                 return PLATFORMS.find(p => p.key === key);
             }
 
-            function aggregateRows(list, keyFn, cfg) {
+            function aggregateRows(list, keyFn, cfg, level) {
                 let map = {};
+                const statusFields = (STATUS_FIELD_MAP[cfg.key] || {})[level] || [];
+
                 list.forEach(i => {
                     let name = keyFn(i);
-                    if (!map[name]) map[name] = { name, spend: 0, clicks: 0, impressions: 0, conv: 0 };
+                    if (!map[name]) map[name] = { name, spend: 0, clicks: 0, impressions: 0, conv: 0, realStatus: null, lastStatusDate: null };
                     map[name].spend += safeNum(i.spend || i.cost);
                     map[name].clicks += safeNum(i.clicks);
                     map[name].impressions += safeNum(i.impressions);
                     map[name].conv += convOf(i, cfg);
+
+                    // التقط حالة العنصر الحقيقية من المنصة: نجرّب حقول المرشحين بالترتيب
+                    // (أول حقل يحمل قيمة صالحة يُعتمد)، مفضّلين أحدث صف بالتاريخ (الحالة
+                    // قد تتغيّر خلال الفترة المعروضة).
+                    for (const field of statusFields) {
+                        const normalized = normalizeStatusValue(i[field]);
+                        if (normalized !== null) {
+                            const rowDate = i.date || '';
+                            if (!map[name].lastStatusDate || rowDate >= map[name].lastStatusDate) {
+                                map[name].realStatus = normalized;
+                                map[name].lastStatusDate = rowDate;
+                            }
+                            break;
+                        }
+                    }
                 });
                 return Object.values(map).map(r => {
                     r.ctr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0;
                     r.cpa = r.conv > 0 ? r.spend / r.conv : null;
-                    r.isActive = r.spend > 0;
+                    if (r.realStatus !== null) {
+                        r.isActive = r.realStatus;
+                        r.statusIsReal = true;
+                    } else {
+                        r.isActive = r.spend > 0; // تقدير احتياطي فقط إن لم تتوفر حالة حقيقية
+                        r.statusIsReal = false;
+                    }
                     return r;
                 });
             }
@@ -1449,17 +1570,17 @@ async def serve_index():
                 let rows = [];
 
                 if (explorerState.level === 'campaigns') {
-                    rows = aggregateRows(fullList, campaignOf, cfg);
+                    rows = aggregateRows(fullList, campaignOf, cfg, 'campaigns');
                 } else if (explorerState.level === 'adsets') {
                     let scoped = explorerState.selectedCampaign
                         ? fullList.filter(i => campaignOf(i) === explorerState.selectedCampaign)
                         : fullList;
-                    rows = aggregateRows(scoped, groupOf, cfg);
+                    rows = aggregateRows(scoped, groupOf, cfg, 'adsets');
                 } else {
                     let scoped = fullList;
                     if (explorerState.selectedCampaign) scoped = scoped.filter(i => campaignOf(i) === explorerState.selectedCampaign);
                     if (explorerState.selectedGroup) scoped = scoped.filter(i => groupOf(i) === explorerState.selectedGroup);
-                    rows = aggregateRows(scoped, adOf, cfg);
+                    rows = aggregateRows(scoped, adOf, cfg, 'ads');
                 }
 
                 if (explorerState.search.trim()) {
@@ -1570,11 +1691,15 @@ async def serve_index():
                     const badge = isLeaf ? ' ' + tierBadge(r.ctr) : '';
                     const clickAttr = isLeaf ? '' : `onclick="drillInto('${r.name.replace(/'/g, "\\'")}')"`;
                     const rowClass = isLeaf ? 'data-row' : 'data-row clickable';
+                    const statusTitle = r.statusIsReal
+                        ? 'الحالة الفعلية من المنصة'
+                        : 'حالة تقديرية (لا حقل حالة فعلي من المنصة لهذا العنصر) بناءً على الإنفاق خلال الفترة';
+                    const statusSuffix = r.statusIsReal ? '' : ' *';
 
                     return `
                         <tr class="${rowClass}" ${clickAttr}>
                             <td>
-                                <label class="toggle-switch" title="حالة تقديرية للقراءة فقط بناءً على النشاط خلال الفترة المحددة">
+                                <label class="toggle-switch" title="${statusTitle}">
                                     <input type="checkbox" ${r.isActive ? 'checked' : ''} disabled>
                                     <span class="toggle-slider"></span>
                                 </label>
@@ -1588,8 +1713,8 @@ async def serve_index():
                                 </div>
                             </td>
                             <td>
-                                <span class="status-pill ${r.isActive ? 'status-active' : 'status-paused'}">
-                                    <span class="status-dot"></span>${r.isActive ? 'نشطة' : 'متوقفة'}
+                                <span class="status-pill ${r.isActive ? 'status-active' : 'status-paused'}" title="${statusTitle}">
+                                    <span class="status-dot"></span>${r.isActive ? 'نشطة' : 'متوقفة'}${statusSuffix}
                                 </span>
                             </td>
                             <td>
