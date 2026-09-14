@@ -1,16 +1,21 @@
 import os
 import asyncio
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ads-dashboard")
-
-app = FastAPI(title="منصة إعلانات elevenz")
 
 CACHE: Dict[str, Any] = {
     "meta_ads": [],
@@ -23,6 +28,57 @@ WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 REFRESH_INTERVAL_SECONDS = 90
 DEFAULT_LOOKBACK_DAYS = 30
+
+# ===== حماية الوصول (Basic Auth) =====
+# اختيار هندسي مهم: الصفحة نفسها ("/") تستدعي /api/data عبر JavaScript من
+# نفس المتصفح. لو استخدمنا X-API-Key، يجب على المتصفح إرساله تلقائياً، وهذا
+# يعني تضمين المفتاح داخل HTML/JS المُرسَل للمتصفح - أي أن أي شخص يستطيع فتح
+# "عرض المصدر" ليرى المفتاح، فتفقد الحماية معناها كسرّ. لذلك استخدمنا HTTP
+# Basic Auth بدلاً من ذلك: يطلب المتصفح اسم المستخدم/كلمة المرور مرة واحدة
+# (نافذة منبثقة من المتصفح نفسه)، ثم يُرفقهما تلقائياً وبأمان مع كل الطلبات
+# اللاحقة (بما فيها استدعاءات JS لـ /api/data) دون أي حاجة لتضمين أي سرّ داخل
+# صفحة HTML المُرسَلة للعميل.
+DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+AUTH_ENABLED = bool(DASHBOARD_USERNAME and DASHBOARD_PASSWORD)
+
+if not AUTH_ENABLED:
+    logger.warning(
+        "⚠️ الحماية بكلمة مرور معطّلة: لم يتم ضبط DASHBOARD_USERNAME/DASHBOARD_PASSWORD "
+        "في متغيرات البيئة على Render. اللوحة متاحة للجميع دون تسجيل دخول حالياً."
+    )
+
+_security = HTTPBasic(auto_error=False)
+
+
+async def verify_dashboard_auth(credentials: HTTPBasicCredentials = Depends(_security)):
+    """حارس (dependency) يُطبَّق على كل المسارات. إن لم تُضبط بيانات الدخول في
+    البيئة، يبقى الوصول مفتوحاً (لتفادي حظر صاحب اللوحة عن نفسه بالخطأ) مع
+    تحذير واضح في السجلات (أعلاه). بمجرد ضبط المتغيرين على Render يُفعَّل
+    طلب اسم المستخدم/كلمة المرور تلقائياً على كل الصفحة والـ API معاً."""
+    if not AUTH_ENABLED:
+        return True
+    if credentials is None or not (
+        secrets.compare_digest(credentials.username, DASHBOARD_USERNAME)
+        and secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="بيانات الدخول مطلوبة أو غير صحيحة",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
+
+
+# ===== النطاقات المسموح لها بطلب الـ API عبر CORS =====
+# نفس الأصل (same-origin) لا يحتاج أصلاً لرؤوس CORS - هذه الإضافة تمنع
+# مواقع أخرى من تضمين هذا الـ API داخل صفحاتها عبر JavaScript من نطاق مختلف.
+_allowed_origins = ["http://localhost:8000", "http://127.0.0.1:8000"]
+if RENDER_EXTERNAL_URL:
+    _allowed_origins.append(RENDER_EXTERNAL_URL.rstrip("/"))
+
+# ===== تحديد معدل الطلبات (Rate Limiting) =====
+limiter = Limiter(key_func=get_remote_address)
 
 # حقول أساسية ومضمونة الدعم في موصلات Windsor.ai (مرجع واحد يُستخدم في
 # حلقة التحديث ونقطة التشخيص معاً لتفادي أي تعارض بين المكانين)
@@ -173,10 +229,13 @@ async def refresh_cache_and_keep_alive():
                 return_exceptions=True
             )
 
-            CACHE["meta_ads"] = meta_res if isinstance(meta_res, list) else []
-            CACHE["tiktok_ads"] = tiktok_res if isinstance(tiktok_res, list) else []
-            CACHE["google_ads"] = google_res if isinstance(google_res, list) else []
-            CACHE["last_updated"] = asyncio.get_event_loop().time()
+            new_cache = {
+                "meta_ads": meta_res if isinstance(meta_res, list) else [],
+                "tiktok_ads": tiktok_res if isinstance(tiktok_res, list) else [],
+                "google_ads": google_res if isinstance(google_res, list) else [],
+                "last_updated": asyncio.get_event_loop().time(),
+            }
+            CACHE = new_cache
 
             logger.info(
                 f"تم التحديث: Meta={len(CACHE['meta_ads'])} صف، "
@@ -196,16 +255,78 @@ async def refresh_cache_and_keep_alive():
             
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(refresh_cache_and_keep_alive())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """يستبدل @app.on_event('startup') المهجورة في FastAPI الحديث. يبدأ حلقة
+    التحديث الخلفية عند إقلاع التطبيق، ويُلغيها بأمان عند إيقافه."""
+    task = asyncio.create_task(refresh_cache_and_keep_alive())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+app = FastAPI(title="منصة إعلانات elevenz", lifespan=lifespan)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """يضيف ترويسات أمان موصى بها لكل استجابة. ملاحظة صريحة حول CSP: الصفحة
+    الحالية تعتمد بالكامل على CSS وJavaScript مضمّنين داخل HTML نفسه (وليس
+    ملفات خارجية منفصلة)، لذلك لا بد من 'unsafe-inline' في script-src/style-src
+    حالياً - وإلا تتعطل اللوحة بالكامل. لرفع الحماية لاحقاً لمستوى أعلى (بلا
+    unsafe-inline) يتطلب ذلك فصل كل الأكواد المضمّنة إلى ملفات خارجية مع نظام
+    nonce، وهو تغيير معماري أكبر خارج نطاق هذا التحديث."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # يُخبر المتصفح بتفضيل HTTPS دائماً لهذا النطاق مستقبلاً (Render يوفّر HTTPS
+    # تلقائياً بالفعل؛ هذه الترويسة إضافة دفاعية بلا أي خطر حلقة إعادة توجيه).
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # يمنع المتصفح من طلب أذونات (كاميرا/ميكروفون/موقع...) لا تحتاجها اللوحة إطلاقاً
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    )
+    # لوحة بيانات تجارية خاصة - لا فائدة تُرجى من التخزين المؤقت، وتعطيله طبقة
+    # خصوصية إضافية تمنع بقاء بيانات الحملات/الإنفاق في ذاكرة تخزين المتصفح
+    # المؤقتة أو أي وسيط شبكي (proxy) بعد إغلاق الجلسة.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self';"
+    )
+    return response
+
 
 @app.get("/api/status")
 async def get_status():
+    # ملاحظة: هذه النقطة متروكة بلا حماية عمداً (لا تحتوي أي بيانات حساسة)،
+    # لأن آلية keep-alive الداخلية في التطبيق تستدعيها دون بيانات دخول، وهي
+    # عادة تُترك مفتوحة لأدوات المراقبة (Render Health Check ونحوها).
     return {"status": "ok"}
 
-@app.get("/api/debug/windsor")
-async def debug_windsor(connector: str = "facebook", include_status: bool = False):
+@app.get("/api/debug/windsor", dependencies=[Depends(verify_dashboard_auth)])
+@limiter.limit("10/minute")
+async def debug_windsor(request: Request, connector: str = "facebook", include_status: bool = False):
     """نقطة تشخيص: تنفّذ نفس طلب Windsor.ai المستخدم في التحديث التلقائي
     وتُرجع الاستجابة الخام (رمز الحالة + نص الاستجابة) دون الحاجة لقراءة
     سجلات (Logs) Render. افتح مباشرة في المتصفح:
@@ -297,8 +418,9 @@ def _valid_iso_date(value: str) -> bool:
         return False
 
 
-@app.get("/api/data")
-async def get_dashboard_data(date_from: str = None, date_to: str = None):
+@app.get("/api/data", dependencies=[Depends(verify_dashboard_auth)])
+@limiter.limit("15/minute")
+async def get_dashboard_data(request: Request, date_from: str = None, date_to: str = None):
     # لا يوجد نطاق تاريخ مخصص → إرجاع الكاش التلقائي (يُحدَّث كل REFRESH_INTERVAL_SECONDS لآخر 30 يوماً)
     if not date_from and not date_to:
         return JSONResponse(content={
@@ -350,8 +472,9 @@ async def get_dashboard_data(date_from: str = None, date_to: str = None):
         "range": {"date_from": date_from, "date_to": date_to}
     })
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_index():
+@app.get("/", response_class=HTMLResponse, dependencies=[Depends(verify_dashboard_auth)])
+@limiter.limit("30/minute")
+async def serve_index(request: Request):
     html_content = """
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -1095,6 +1218,19 @@ async def serve_index():
                 sortDir: -1
             };
 
+            // أسماء الحملات/المجموعات/الإعلانات تأتي من منصات خارجية (Meta/TikTok/Google
+            // عبر Windsor.ai) ولا يمكن الوثوق بمحتواها. يجب تشفيرها دائماً قبل إدراجها
+            // ضمن innerHTML لمنع ثغرات XSS المخزّنة (مثال: اسم حملة يحتوي وسم <script>).
+            function escapeHtml(str) {
+                if (str === null || str === undefined) return '';
+                return String(str)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
             function safeNum(val) {
                 if (!val) return 0;
                 let n = parseFloat(val);
@@ -1638,10 +1774,10 @@ async def serve_index():
                 const el = document.getElementById('filter-chips');
                 let chips = '';
                 if (explorerState.selectedCampaign) {
-                    chips += `<span class="filter-chip">الحملة: ${explorerState.selectedCampaign}<button onclick="clearCampaign()">✕</button></span>`;
+                    chips += `<span class="filter-chip">الحملة: ${escapeHtml(explorerState.selectedCampaign)}<button onclick="clearCampaign()">✕</button></span>`;
                 }
                 if (explorerState.selectedGroup) {
-                    chips += `<span class="filter-chip">المجموعة: ${explorerState.selectedGroup}<button onclick="clearGroup()">✕</button></span>`;
+                    chips += `<span class="filter-chip">المجموعة: ${escapeHtml(explorerState.selectedGroup)}<button onclick="clearGroup()">✕</button></span>`;
                 }
                 el.innerHTML = chips;
                 el.style.display = chips ? 'flex' : 'none';
@@ -1689,7 +1825,7 @@ async def serve_index():
                 body.innerHTML = rows.map(r => {
                     const cpaText = r.cpa !== null ? r.cpa.toFixed(2) + ' ر.س' : '--';
                     const badge = isLeaf ? ' ' + tierBadge(r.ctr) : '';
-                    const clickAttr = isLeaf ? '' : `onclick="drillInto('${r.name.replace(/'/g, "\\'")}')"`;
+                    const drillAttr = isLeaf ? '' : `data-drill-name="${escapeHtml(r.name)}"`;
                     const rowClass = isLeaf ? 'data-row' : 'data-row clickable';
                     const statusTitle = r.statusIsReal
                         ? 'الحالة الفعلية من المنصة'
@@ -1697,7 +1833,7 @@ async def serve_index():
                     const statusSuffix = r.statusIsReal ? '' : ' *';
 
                     return `
-                        <tr class="${rowClass}" ${clickAttr}>
+                        <tr class="${rowClass}" ${drillAttr}>
                             <td>
                                 <label class="toggle-switch" title="${statusTitle}">
                                     <input type="checkbox" ${r.isActive ? 'checked' : ''} disabled>
@@ -1707,7 +1843,7 @@ async def serve_index():
                             <td>
                                 <div class="name-cell">
                                     <span class="name-icon">${icon}</span>
-                                    <span>${r.name}</span>
+                                    <span>${escapeHtml(r.name)}</span>
                                     ${badge}
                                     ${!isLeaf ? '<span class="drill-arrow">‹</span>' : ''}
                                 </div>
@@ -1730,6 +1866,14 @@ async def serve_index():
                     `;
                 }).join('');
             }
+
+            // تفويض حدث النقر (Event Delegation) بدل onclick مضمّن بالاسم داخل السلسلة
+            // النصية - يُسجَّل مرة واحدة فقط، ويعمل مع كل الصفوف حتى بعد إعادة رسمها،
+            // ولا يحمل أي خطر حقن HTML/JS مهما كان محتوى اسم الحملة/المجموعة.
+            document.getElementById('table-body').addEventListener('click', (e) => {
+                const row = e.target.closest('tr[data-drill-name]');
+                if (row) drillInto(row.dataset.drillName);
+            });
 
             function setPlatform(key) {
                 explorerState.platform = key;
