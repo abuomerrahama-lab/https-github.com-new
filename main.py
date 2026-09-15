@@ -948,6 +948,13 @@ async def serve_index(request: Request):
             .card-sub { font-size: 12.5px; font-weight: 700; }
             .card-meta { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color); display: flex; gap: 14px; font-size: 11.5px; color: var(--text-muted); font-weight: 600; }
             .card-compare { margin-top: 8px; min-height: 20px; }
+            .card-accounts { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+            .card-accounts .account-row {
+                display: flex; align-items: center; justify-content: space-between;
+                font-size: 11px; font-weight: 600; color: var(--text-muted);
+            }
+            .card-accounts .account-row .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+            .card-accounts .account-row b { color: var(--text-dark); font-weight: 800; white-space: nowrap; }
             .compare-pill {
                 display: inline-flex; align-items: center; gap: 4px;
                 padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 800;
@@ -1284,6 +1291,7 @@ async def serve_index(request: Request):
                     <div class="card-value" id="google-spend">0.00 ر.س</div>
                     <div class="card-sub" id="google-sub" style="color:var(--accent-blue);">0 إحالات</div>
                     <div class="card-compare" id="google-compare"></div>
+                    <div class="card-accounts" id="google-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="google-cpa">--</b></span>
                         <span>CTR: <b id="google-ctr">0.0%</b></span>
@@ -1299,6 +1307,7 @@ async def serve_index(request: Request):
                     <div class="card-value" id="tiktok-spend">0.00 ر.س</div>
                     <div class="card-sub" id="tiktok-sub" style="color:var(--accent-orange);">0 تحويل/نقرة</div>
                     <div class="card-compare" id="tiktok-compare"></div>
+                    <div class="card-accounts" id="tiktok-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="tiktok-cpa">--</b></span>
                         <span>CTR: <b id="tiktok-ctr">0.0%</b></span>
@@ -1314,6 +1323,7 @@ async def serve_index(request: Request):
                     <div class="card-value" id="meta-spend">0.00 ر.س</div>
                     <div class="card-sub" id="meta-sub" style="color:#0284c7;">0 محادثة/نتيجة</div>
                     <div class="card-compare" id="meta-compare"></div>
+                    <div class="card-accounts" id="meta-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="meta-cpa">--</b></span>
                         <span>CTR: <b id="meta-ctr">0.0%</b></span>
@@ -2032,6 +2042,36 @@ async def serve_index(request: Request):
             // واحدة {meta_ads, tiktok_ads, google_ads}. دالة نقية بلا أي لمس لـ DOM،
             // تُستخدم مرتين: مرة للفترة الحالية المعروضة، ومرة للفترة السابقة عند
             // حساب شريط المقارنة - لضمان أن كلا الحسابين يستخدمان نفس المنطق تماماً.
+            // يجمّع صفوف منصة واحدة حسب account_name (حقل موجود أصلاً في كل صف
+            // من Windsor.ai لكل المنصات الثلاث) - يكشف حسابات إعلانية متعددة
+            // تحت نفس المنصة (مثال: حساب Meta لإيليفنز وحساب Meta لـLuxlin،
+            // أو حساب TikTok للمشغلين وحساب TikTok لإيليفنز).
+            function computeAccountBreakdown(list, convFn) {
+                const byAccount = {};
+                scopedList(list).forEach(i => {
+                    const name = i.account_name || 'غير معروف';
+                    if (!byAccount[name]) byAccount[name] = { name, spend: 0, conv: 0 };
+                    byAccount[name].spend += safeNum(i.spend || i.cost);
+                    byAccount[name].conv += convFn(i);
+                });
+                return Object.values(byAccount).sort((a, b) => b.spend - a.spend);
+            }
+
+            // يعرض تفصيل الحسابات فقط عند وجود أكثر من حساب واحد فعلياً لهذه
+            // المنصة - لا داعي لتكرار الرقم نفسه إن كان هناك حساب واحد فقط.
+            function renderAccountBreakdown(elId, accounts) {
+                const el = document.getElementById(elId);
+                if (!el) return;
+                if (accounts.length <= 1) { el.innerHTML = ''; return; }
+                el.innerHTML = accounts.map(a => `
+                    <div class="account-row">
+                        <span class="account-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
+                        <b>${a.spend.toFixed(2)} ر.س</b>
+                    </div>
+                `).join('');
+            }
+
+
             function computeAggregateMetrics(data) {
                 const metaList = scopedList(data.meta_ads);
                 const tiktokList = scopedList(data.tiktok_ads);
@@ -2083,6 +2123,10 @@ async def serve_index(request: Request):
 
             function updateDashboardUI() {
                 const cur = computeAggregateMetrics(globalData);
+
+                renderAccountBreakdown('meta-accounts', computeAccountBreakdown(globalData.meta_ads, parseMetaConversions));
+                renderAccountBreakdown('tiktok-accounts', computeAccountBreakdown(globalData.tiktok_ads, i => safeNum(i.conversions || i.conversion || i.results)));
+                renderAccountBreakdown('google-accounts', computeAccountBreakdown(globalData.google_ads, parseGoogleConversions));
 
                 document.getElementById('meta-spend').innerText = cur.metaSpend.toFixed(2) + ' ر.س';
                 document.getElementById('tiktok-spend').innerText = cur.tiktokSpend.toFixed(2) + ' ر.س';
