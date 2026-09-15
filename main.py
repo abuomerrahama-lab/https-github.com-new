@@ -953,8 +953,10 @@ async def serve_index(request: Request):
                 display: flex; align-items: center; justify-content: space-between;
                 font-size: 11px; font-weight: 600; color: var(--text-muted);
             }
-            .card-accounts .account-row .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+            .card-accounts .account-row .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
             .card-accounts .account-row b { color: var(--text-dark); font-weight: 800; white-space: nowrap; }
+            .card-accounts .account-row .account-stats { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+            .card-accounts .account-row .account-conv { color: var(--text-muted); font-weight: 700; font-size: 10.5px; }
             .compare-pill {
                 display: inline-flex; align-items: center; gap: 4px;
                 padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 800;
@@ -2059,14 +2061,16 @@ async def serve_index(request: Request):
 
             // يعرض تفصيل الحسابات فقط عند وجود أكثر من حساب واحد فعلياً لهذه
             // المنصة - لا داعي لتكرار الرقم نفسه إن كان هناك حساب واحد فقط.
-            function renderAccountBreakdown(elId, accounts) {
+            // نفس وضعية العرض الأصلية (الإنفاق بارز كما كان)، مع إضافة عدد
+            // النتائج/الرسائل بجانبه فقط.
+            function renderAccountBreakdown(elId, accounts, resultWord) {
                 const el = document.getElementById(elId);
                 if (!el) return;
                 if (accounts.length <= 1) { el.innerHTML = ''; return; }
                 el.innerHTML = accounts.map(a => `
                     <div class="account-row">
                         <span class="account-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
-                        <b>${a.spend.toFixed(2)} ر.س</b>
+                        <span class="account-stats"><b>${a.spend.toFixed(2)} ر.س</b> <span class="account-conv">${a.conv.toLocaleString('en-US')} ${resultWord}</span></span>
                     </div>
                 `).join('');
             }
@@ -2124,9 +2128,9 @@ async def serve_index(request: Request):
             function updateDashboardUI() {
                 const cur = computeAggregateMetrics(globalData);
 
-                renderAccountBreakdown('meta-accounts', computeAccountBreakdown(globalData.meta_ads, parseMetaConversions));
-                renderAccountBreakdown('tiktok-accounts', computeAccountBreakdown(globalData.tiktok_ads, i => safeNum(i.conversions || i.conversion || i.results)));
-                renderAccountBreakdown('google-accounts', computeAccountBreakdown(globalData.google_ads, parseGoogleConversions));
+                renderAccountBreakdown('meta-accounts', computeAccountBreakdown(globalData.meta_ads, parseMetaConversions), 'رسالة');
+                renderAccountBreakdown('tiktok-accounts', computeAccountBreakdown(globalData.tiktok_ads, i => safeNum(i.conversions || i.conversion || i.results)), 'تحويل');
+                renderAccountBreakdown('google-accounts', computeAccountBreakdown(globalData.google_ads, parseGoogleConversions), 'إحالة');
 
                 document.getElementById('meta-spend').innerText = cur.metaSpend.toFixed(2) + ' ر.س';
                 document.getElementById('tiktok-spend').innerText = cur.tiktokSpend.toFixed(2) + ' ر.س';
