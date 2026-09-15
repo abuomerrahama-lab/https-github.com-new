@@ -2,12 +2,15 @@ import os
 import asyncio
 import logging
 import secrets
+import hmac
+import hashlib
+import base64
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, Request, Depends, HTTPException, status, Form
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -48,22 +51,21 @@ CACHE: Dict[str, Any] = {
     "last_updated": None
 }
 
-WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+WINDSOR_API_KEY = os.getenv("WINDSOR_API_KEY", "").strip()
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 REFRESH_INTERVAL_SECONDS = 90
 DEFAULT_LOOKBACK_DAYS = 30
 
-# ===== حماية الوصول (Basic Auth) =====
-# اختيار هندسي مهم: الصفحة نفسها ("/") تستدعي /api/data عبر JavaScript من
-# نفس المتصفح. لو استخدمنا X-API-Key، يجب على المتصفح إرساله تلقائياً، وهذا
-# يعني تضمين المفتاح داخل HTML/JS المُرسَل للمتصفح - أي أن أي شخص يستطيع فتح
-# "عرض المصدر" ليرى المفتاح، فتفقد الحماية معناها كسرّ. لذلك استخدمنا HTTP
-# Basic Auth بدلاً من ذلك: يطلب المتصفح اسم المستخدم/كلمة المرور مرة واحدة
-# (نافذة منبثقة من المتصفح نفسه)، ثم يُرفقهما تلقائياً وبأمان مع كل الطلبات
-# اللاحقة (بما فيها استدعاءات JS لـ /api/data) دون أي حاجة لتضمين أي سرّ داخل
-# صفحة HTML المُرسَلة للعميل.
-DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+# ===== حماية الوصول: صفحة دخول مخصّصة + جلسة موقّعة (بدل Basic Auth) =====
+# التحوّل من Basic Auth: نافذة تسجيل الدخول التي يفرضها المتصفح (Basic Auth)
+# رمادية قياسية ولا يمكن أبداً تخصيص شكلها أو إضافة الشعار إليها - هذا قيد من
+# المتصفح نفسه وليس شيئاً يمكن حله بالكود. لذلك استبدلناها بصفحة "/login" مصمّمة
+# بالكامل بهوية elevenz، وعند نجاح الدخول نُصدر كوكي جلسة موقّعة (HMAC-SHA256)
+# للتحقق منها لاحقاً - بدون أي مكتبة خارجية إضافية (لا itsdangerous ولا غيرها)،
+# فقط وحدات بايثون القياسية (hmac/hashlib/base64/time)، حفاظاً على نفس مبدأ
+# التبعيات الدنيا المتّبع في بقية الملف.
+DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "").strip()
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 AUTH_ENABLED = bool(DASHBOARD_USERNAME and DASHBOARD_PASSWORD)
 
 if not AUTH_ENABLED:
@@ -72,26 +74,173 @@ if not AUTH_ENABLED:
         "في متغيرات البيئة على Render. اللوحة متاحة للجميع دون تسجيل دخول حالياً."
     )
 
-_security = HTTPBasic(auto_error=False)
+SESSION_COOKIE_NAME = "elevenz_session"
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60  # الجلسة صالحة 7 أيام قبل طلب دخول جديد
+# الكوكي "secure" (لا يُرسَل إلا عبر HTTPS) تلقائياً على Render، ويُعطَّل محلياً
+# (http://localhost) حيث لا تتوفر شهادة SSL أصلاً، حتى يعمل الاختبار المحلي.
+_COOKIE_SECURE = bool(RENDER_EXTERNAL_URL)
 
 
-async def verify_dashboard_auth(credentials: HTTPBasicCredentials = Depends(_security)):
-    """حارس (dependency) يُطبَّق على كل المسارات. إن لم تُضبط بيانات الدخول في
-    البيئة، يبقى الوصول مفتوحاً (لتفادي حظر صاحب اللوحة عن نفسه بالخطأ) مع
-    تحذير واضح في السجلات (أعلاه). بمجرد ضبط المتغيرين على Render يُفعَّل
-    طلب اسم المستخدم/كلمة المرور تلقائياً على كل الصفحة والـ API معاً."""
+def _session_secret() -> bytes:
+    """مفتاح توقيع الجلسة. يُفضَّل ضبط DASHBOARD_SECRET_KEY صراحة في البيئة؛
+    وإلا يُشتق تلقائياً من بيانات الدخول نفسها - يبقى ثابتاً وصالحاً طالما لم
+    تتغيّر كلمة المرور، دون فرض متغير بيئة إضافي إجباري."""
+    explicit = os.getenv("DASHBOARD_SECRET_KEY", "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    return f"elevenz:{DASHBOARD_USERNAME}:{DASHBOARD_PASSWORD}".encode("utf-8")
+
+
+def create_session_token(username: str) -> str:
+    """يُصدر رمز جلسة موقّعاً (اسم المستخدم + وقت الإصدار + توقيع HMAC)،
+    مُرمَّزاً بـ base64 ليصلح كقيمة كوكي."""
+    issued_at = str(int(time.time()))
+    payload = f"{username}:{issued_at}"
+    sig = hmac.new(_session_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    raw = f"{payload}:{sig}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
+
+
+def verify_session_token(token: str) -> bool:
+    """يتحقق من صحة رمز الجلسة: التوقيع صحيح (بمقارنة زمنية ثابتة تقاوم
+    هجمات التوقيت)، اسم المستخدم مطابق، والجلسة لم تنتهِ صلاحيتها بعد."""
+    if not token:
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+        username, issued_at, sig = raw.rsplit(":", 2)
+    except Exception:
+        return False
+
+    expected_sig = hmac.new(
+        _session_secret(), f"{username}:{issued_at}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+    if not hmac.compare_digest(username, DASHBOARD_USERNAME):
+        return False
+    try:
+        if time.time() - int(issued_at) > SESSION_MAX_AGE_SECONDS:
+            return False
+    except ValueError:
+        return False
+    return True
+
+
+def has_valid_session(request: Request) -> bool:
     if not AUTH_ENABLED:
         return True
-    if credentials is None or not (
-        secrets.compare_digest(credentials.username, DASHBOARD_USERNAME)
-        and secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
-    ):
+    return verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
+
+
+async def verify_dashboard_auth(request: Request):
+    """حارس (dependency) لنقاط الـ API. يتحقق من كوكي الجلسة بدل ترويسة Basic
+    Auth. إن لم تُضبط بيانات الدخول في البيئة، يبقى الوصول مفتوحاً (لتفادي حظر
+    صاحب اللوحة عن نفسه بالخطأ) مع تحذير واضح في السجلات (أعلاه)."""
+    if not has_valid_session(request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="بيانات الدخول مطلوبة أو غير صحيحة",
-            headers={"WWW-Authenticate": "Basic"},
+            detail="الجلسة غير صالحة أو منتهية - يرجى تسجيل الدخول من جديد",
         )
     return True
+
+
+LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAQQAAABbCAYAAACVp/ucAAA/X0lEQVR42u29eZhdVZX3/1l7n3NryEQAA2GUpKoSShClSIKCFg2CSVUCilyQKWEM2vTbiq+2tv1ry+pu+9e2aNvtAESQWYSrMqWSoKKUooylgpgmqRBkEgxDCBmq6p6z93r/OOfWdO+tVJIKCXrX89ynnudW1Tl7/O61vmvttYTdXwRQGk48BMI2VLIYqUX5KSb+Ck+u+HH/31SkIhXZ4c22+8vMD+2Fj36BsY14p6AgVlDdBD7L6mUrIGsh5ypTWpGKbL+Yt0T7XP40xDbiY01ATATv8thwPMi5ALTlKhpCRSrylw0IbQVF5ljwfohCI1h8rCj1zDh5P9rx0GYqU1qRivzlaggFqQIxpU0ercWZmspUVqQifz2AoCP+zjhfmcqKVOSvBxAqUpGKVAChIhWpSAUQKlKRilQAoSIVqUgFECpSkYpUAKEiFalIBRAqUpGKVAChIhWpSAUQKlKRilQAoSIVqUgFECpSkYq8pSXYwf8XaBNYmVxDbF4nAM3ApVOmKEC2MafSzlvxroGB7JB+AWSnTNFs2i/aUdnhxCxthub7EmDuPM5D+5s4Vjv13QNrY9D4Je+aotCo0K7s2sQ2Jddv0j7Y2W1URTg9a1i3btflJZkyRbkt50W2v48CWUvT4rDML4vUDm1uDnRxU6ht26qRpNeZ61tvZcYCpaHV09CqyaclZsYCpb7l9zQsOGTI3+8ICDQ3B0myldGhpy5uCrW5OdDtSjZT6j1Zy5uSuKbsu3d8/MqsjZLS3BwkY/6mJesRmpsDGrOZUf9HU1M41m3U7A6P9diCU9qeYPsWUc7RhYPmgIaJB+J0MtbtYcWMd7FFvfqPHdTzyrG1mzafvW/wklzb+TKdAxuIJV2x7F4pz4TmZktnZ0xnZ3JKHnDSnlRX74v6SRidnDEE+b4MB9X2bvr8wRveaJ4YvjLTdz4nS7qiwoAqILnRZm1qM9DuqD9+f6g5AvUGMSvpzq19c07GnGP6SQdiwsNRb7D+CVbl/pi2y2/z85qaArq6omT8OmHGyRNQvz/ixuPsVKwmm8lJLyZeD+4Vgj1epjO3aZC2YunsdDvpRB48xzEABzdXU1N7EJGZAEwgYCJYwL1BzEYwG+h7+QW6HuwZAmA72EYFkVzO6dmzJxJyFEbGE4+Bvr5djZEt5P3DcnPuDQUjo19ACKSqf93coxHzPpBZCI0o+xljJnvJMDlUPrf/Zj4wYWPvPqFfv3/IGm/5rVEeJ9OzQq567IWCurR1NSVdnPWtt2LM6ajXAZRWh1iLd08g9mRW3/30di5m09+vxpP2JApPQvQYlMNA6hDehg2rUEvzHjGXTX2dd2Tyb+xXpc/WGr8S1f9FpVNuePjn6WQb2KopkeSArG9pxdp2ME2IQOyexPgrWVX7Tcj5gfUz1mCAUtd6NtZ8GjHvQgS8/wNE/86q5d9j23JUDvztQcdOpmb8CXjbBLwLOBRhMrZqYjJrAj4GF21EeBaV51D/KGIeoLtjWclnjmWfARqzGaLNJ2JkNp4jED0MZS/E7EGQSf7U9YH3r4P8GXQVwhN4+S2Zp+9i5cr8jrSxsO514az3Y80/IXIS1SHoLjof8zEoP8HpP8r1D3XJKAZyYFHWt5wKchEi78bYfZP8JA5RBfW+Roi/MX0TF+zfI3gJwSSYE1roi0H1Dyg/wcvlcsODL/SjZdmB3amAMDCh006cQhD+A2JOQPUwbCZAHahHVFFPNHtipD85bAMTMz7AG4MIWJts/57oNUQeBb1arns4N+QkGN63bNaSyzka5s5Cwp8iMhHv+hJoMlVgIM6fxprlP9w5mgFKfcscxHZiTBUuyiOiGFuFah/ez6e746fpSRiPCkgPPmUPMtGngHnAEQTVYWH8ko/mBzXBIASIof8T5zcjdOH9j6DuStZ8o69o7e0oEMy4YAJ+3SUIJ6N6JGHVOHyhjQp4jxKn/xVAOscDbYwwdOF0OZlx32Rl7rVtBQZVBAHOnr0/IfdRFU6nL3YobpdlN1U1VIUB+fgFjDnGbMV+TwiVQ+e+m7rWToy5GRvMQ2RfXBzjohh1zoh69UYOG+8yF0ztzeQjE8ZO1Dv1xM6xJYpw6rHmHRjzSYz+RhfN/oJmj64R0G3nFsbEflbq5lZR3/p3BJnHEPt/EfsuICDui3AuRr1XUITw0/v3ZCaGmokiIzg8zjv6opieOMKYPQntSSA36nlzHtBFs05IV0px33KF3I9mHiaciIt7gSqgCu9j1CsiH0d3yhLRdE9eiEgVLo4RySTvdr0YW4XoOYCkarGMMH4emgPq5p9PVdyFMf+MDY5CJCTuzePiGHUe8IhkBj4EgKLO4eKYOB8hMg5j34+1X8esfYSGllP619528xrpHIMwY/4C9KVfI3wFY9+HyDiiwW1UDyL9bUxw3KPOD7SREAmOxth2os2PUtd6Qf87En5h63JJUyCghCzEmOn0xRFgEDKwiz4iAX1xntDuj3cXmxFP5rq5VTTM/xzO/hJr349SjY8c6nyC8gQg1isGo/K+iRFqkqMjEMQIBsQmg4kQO4fzipEphEE7tb5TFzbNlnb8m0eyNAeQc0ybdzgmWIGx30DMvqhXfJTYhiJh2jcDCaq/b0KM90IgCP39kgAhxKsnih0iVVhzNJgf63lz/lPPnj1R2vGDQGHA7BImg/MgdghvqR6EE5gxf6+d0v2mphDVvwGvCHYQVASoU1QOoCk7kRG1tpyjbu4B1I//AVa+i5hpqCo+LoxfZtD4lUl9JzZdQ4m+7GOHKog5HMwd1Ld+k4b5eyeZtLd1baQZuA85fh9mzL8K5S7EHgZKMsdaqo1SzI0XtBlCIF0fHow5BGuuYcaWWzi05WA6O+NRgcL6nvQd8l5Cq4lluRtkPhdCIu9R5pmyYNAwf2+MuQ4x/z/IuBRJNVnAQ/MbSnr2/DkyI/WusAgEr0rslMDOwobLdNFR50ou53TnxkUk3hE6Y+rnfhhrV2DscclCLJgiUpbhfy0esWcJQKgqziuCIbCfIZScnvOeKYPcrkoBHLysQ0yZzWJA5dRhZttYmAuwacoRCAcO4oUGKbQBiKyli01l3pusjRkfPA4T3Iu1p6BeRzN+W29bCoyaKGXY8FLgTupbj4Cco23UHqSEMK1vOZSwtgMTXIx6n7aRsWmjJn2WIEtsV1Df8v7UvBq5jZNr0jboOrwXdHeKA1JANpuSEz7zhL1QvRUTfhSNXWpkmRIDOchHK/xiQ8gLPZbAKOnwl/PhJosx9h5hL4JgiS6afa6A152KmDlHQ8s5mOBmjOyHjxxSdoFoSg6CF256pRpjfaEzI/cLII4dmeAkrL9FL3jvfgqiqsJ9zemY66+I403JKT2EUdLEdtW5KUCPzXhkswUg+iAiGXRY+yVBIeAxyDmamoJhfUy0m7rWLGR+hEhDqhHISOM3wurTEYHLRzHGvhfxdzKz9TDa2z1b1yLToj5zj8XYuzGmibjPIWK2o41bn2cfeYzMRMzdNMyfB/gRgWt9V3IwqLmNyDmMKfAwupM+o+URPFWBQfQ2UzSY07KTcNU5rD0eF0dlEFUTxk0EMeLFYCw83xfwf9ZO4A1nMVbAmkTB1jKBSYLB+RikGuFyPeeowwR07M2Hfs7gNJAlKDWJxiMl3qMutbMFMaKSHNjfeLGGH6yrxQSAEcHIVsgkseTjPNXB8Tj3BQHluONsEgAEhOOeQN3vMIFBxZVoxpEc3LxHSpLuOCj0U53MRWyKvf0v84i1uPxzBP5XAHRN80VrY/pJTRiuBibjnSszfn7w+CXgNvyT/m7khRvgojym6mAcX2Dq/NqUf5ERwWDa/IPAXo+Y6fjYIaZcG3XkNg5p50C/hr7SoLFDmIj679Ew91ja230580FyOG3DUBXdC3IzyR4xWCNj/glG6UFUjakKLHl/F3HvtYMank1sQ7Ply9jgb9LTMyzxgGSQjRXUb8D5JzH81Ad6v1UT3f5SKMdNyAR/P3VLE2JOBo4iNIbIl55KkQDve6nJTGFz/kjgCSavNcAYVWEq+Ptb3oXI/yCmBi25mBOQM6HFx+D9H1EewOi9WHlmUyTm756qig6uiqa8s8Z/qMr44wnsFJwfARbUJlqQvkcvPHpPuabzNW3rNLJ0cUjXkteob3kYMcempthw9W1vqqvnAPf0z82OjsH0Be8ANz1Z24OtBfEYa1D3GCuX/S61wf2QjTZ1/t5Y/yPETEw4pBJgoMQYm/Ag6v4M8itUOrHxk4j14JTYTALmIeYUxL6tMOxltniAxh70/UxiGi/yRJkKXUlnDl5UTfByDgmn4fq1v9JtRMG7VzDyKOjPUPMEljyKRTWPk5ngTsLIMYhMQazBuxLRAmJRjTF2DzDfZPopC+i88/lyHq/EfOzy2tZ8Ic9suQc1F2GYjqpn7Exmi9IDvB2RYAR9Kk8myJB3S9ks50vu8c3BEBJmxsmnof7CZBJK1UFQhw0tLt6Ii+/GZ77GU3d0FX5bmKVPPA2fgBXAl3Th7IV4/SzWzEw4tDKdNkZLnzg7JMm7Zpw8AR9fjgmmpsx6UJJ9N4FF3eN4vsukl75NVxJ0VFhxfwZm/wGAW3Vh03Ri+TSwuKzarFL4vhanewGvsTIrjF+Vvk86ifOXIDKunxEHQdVj7Ti8tgD30LTWJIFg20skLrV0oRiOQczeQ923FIreeCDRDpomD3pf1tC01rAh/iYmcxDelV4bSkwQBLh4Ld5fRY35Dr/vWF+mRT+ivvWLGH8ZqotA9kqnQIr2uaoBxuGoLc8TN1s2zRA2PH85EsxGo9KAhTqCTICLnsP769HMErrvfK7MU+8DrqSxZV9iLkb9mRh7aNL/ojUc4H2MDY7AxF+BtrO25v6W9s4Y+F76GXtG4NxZ8wnMjcAeqXkoRfOVsRnyrgMriyT34Gva1maChORqVHLzDyJ2X0ZsisoiRYNpQot3j+L1n3lq2YpBp48W7a5s1tDYqKzMfZ9xE84mlEa8xkWLSZNCjeQjj3evADB1/NhEabS1QXu7ovMuxmZOSE+NoNg7bBLnoo+/ien7ImvufXWAaU66o4P71tZspb3zKV04ZzmWi/BYpMSgiypGDI7nebr6ac1mLbflPKKACL3BL8jEzyQ1K+MBE0bxiDWob6JubhXz50R0dW1/sM748YlqLu5ogqqQKB+n7r+BcAn16zHakZgLS1y60QI6czGb556DCU5NzITiyPQEUoIAF91MpP/C08tXDwJkLT7Nmw3dHS9QN/duTHAawl6oatGaUzzWGnzcTabnmeTLRh0GBkm8xIzxH8TaRYn2V5LrSgDfRUvB/RNrVjw+QhsH2rpy2UvAv1I391ow/4bYRagvBgUhwEeKDc+g/pHb6OZHW4tRUBDaxpAzu6/ZSGdnrIvmfBQr1wMZvJYAA/VUBQF98TK8LpLrHnlN2zDS3u4lccN1xjS0fAkTfh4XFZ+gmmoGPu5E+s5i1U//RFNTSNd8VwoJ0xBIr4ubJpEPfkhoTyDvCmEZw+FAyVhDX3wdvvfv6JvRSy7nk4CeHQlM6nedHoCxXYjsnXJ3pojAU+9R+STdHd9MTsjFIV1LopKT2IaRdryeN+ssxFyDSHXpQcdjxeB1A86dIjc+2qlZrORwQxZyfesNGHtu6rMvtM0jYvD6IvAhujseHkWgECO6kBtb9iWSu7H2qIQM7D9BFbGCjx+he9nRSfm89rQsXjscsuBtBL4Da5twbjCQ9K9pVGPQdrqX/Tug6fjFIxBySn3LqRh7TXKCuWIwKDxbBFx8IWuWX9sf1DWc3GvM1hJtvhGb+VCyfku0URC8/zo9r32e5x/soTGbYWUuGgXIDoRl02aof/hzmOBLZcwcRURRXUPf3kfwzPV9QwBpZ/oIslkruZzTRXM+ipFrgNoEZCk+2DOhJR8vJR8ulO/dv35wAJ2BzpiZ8xrAfDRxpRQ9wGMDi3e/xPR+ZAAMuqKSYNCWgkG2cTz54DYCcwKRcyXAAARPaA2R/z7V7lK56fHNA2Cwo5K2TeRcTDglBRNTApAEJx9PwcBAmykFBgqizc2BtOP13NnnglwN5cBAPYEYvG7C6+ly46OdSfz6ILU/IRcFw114Fw3TnAzqHTaYiuhRibtwxvadJIXbjJEcifDupHq2DCWT1StiOvpjJAb+zxPGC7D2XSXAgAFijv+me9mXaG6zZLM2HT8tY8JpGvGaqrOuhDZKSnKooP5zTFp3E83NAbncsPXWlng+4p45mGB+CTAo8FSC99+ie9mneP7BXpqbA1bm8qPcqNoPBrQr3cv/HR9/nsRjHBetaFWDSAPVfz4reX52p7sWtbk5SMBg1tkI1wO1ePUlDqmITGCJ3J1o9bnyvfvXp/tVh9rYXj5AkJmWLkw7bMLBu5eJ3EU8ee+r0BwMtq2HgkFbcnoubppE7cQfEdiTiLwHSnEDMdZYYncLBz94tizp2jJyGPN2yNT5tWDOQ2MtYfcqJjCgS3iq4zsD6l1JjUfINobS2RnruUedi5UrE3JSXUkwsDbRDOBUueHhH6ca07B+pddqnfsx8Gq6J3QI0Zd4y2alIOW2y9uQXkNHOZygyqIaMaxqLnjF6vcGtUvo7IxpbB6P58NluB1NibYVrO74DGDobHeUvtyVaqJ46uZ9BJEbMVKbgkEpE8SAOJRPs7rjP9NLUyU0jtQVqf6jZcizVPvx99P958v6/3+7NK1+b48w8cDLcT6HCYJ0DQw9QMUoahbSmM0UXf0eazBY3JSuy1lnIeZaRDJ49cO4Ok0IRBuS93fhe86T6ztf1yx2eGoCw9T5tSgn4mNKblyxBty/p3ZhEthTFgzavZ7ZtHdiJsiJxM6XJhHVEdiAyN9CJl4k7Un8wRiCQTIJtTobYxrQoogwn1zoiZ+lT9uKbM0irbvZSm5lXhfNOpvAXolILb4E0Kl6rDHAK3j/EbnuoZ8UzKdykSCsWfEGog+X+LVJ5kRnMa3rgIFTcxvHIZdzTMtOwvCBsnOsrOZ/O7oH2pXGPkTjp2Ps3+BiPySqMT12UbceuHTrPv3mZN3UzT0NY68FU5vY4cPBQBVEwcTAP9Dd8dWtuBnhsZ7JiPkoPtaS2oH6CMsnoSvaCl8wGvE0NycaUOz+DRetw1hb5BFTFZTDyG88MgGfnROFq9mslSVdkS6cfSaBuRaREFUt3nPqCGyGvvhu8sF5cv1jr2tbmxmisfYDQsZOwdjj8c6nARyDJ0dw8WomBEvSCXDl7ep2r+fO2ouq4PsE5gRiX46A8gTWErlb2CIXMnW+Ux1jzaCwWCytadCPFtn3YgXl33hm2UtpMImWI36kvTPWC2adjbVXJWCgOnSsCpyBEWAdLv6oXP/IvZrFlgGD4fvgh8UEuxi8jzHhoYgemjL+2wgI6cb2b+yL8N4Sc+wxBsTcXkJ7AZUjsWFNMRgV/o/r6O5YuxU7WfrBwIZXIzK+tGagvt9y0PhzrF76tVSrGFniaA5ixpd0j5tAUL2Vw2t/x+Cw8R2RQpjy0ysex/C9lEORIbEJ3ntMsAfWHpPwoIw5ICQbOuf0vFlnEZjvgmRKcgaKkgkC8u5u4p5F8r3716si0l7aC2Kojo9CzMQSbh+PsSByM11Le8pumALJtuiIPbDmVgJ7ArGLy5gJSmAMkf8eVfFF5B7ohXZ2JFtLmY1QYPmbS3hLPEYsPn4edb8ChPaVUhaBQXXR7HPx5jso43BazLMoiTdBEZz7rFz/yL26uCkshcAlpSq4B+82pW3VIeSbGIMwO/kqt40LOt3YVcFRSFCbBojJcH4Poz8cYkIWLhUZfxzeKaJmOEYmbjZ3dXoJbuRgoQQMrgEmJc8rMhM8GJPoGPoPdC//Kk1NIYwi74AxzSXuDidXw5JbuDckZswY2vKdUxLCW+ytaLwBY4cfKB5jLUoTACsbY8YyuUpzcyDt7V4XzT4XMdckd4xKcAZoTJUV8no7sZ4j3/t9QiCOsN8MjkMH4ryLNSTELRtgq8twBmfPnoip/mGiGTgHJe05R2ANsb+ZLQctlCVdW2gT2Qnp1QTaPdM+MAnPQSViAzwSCPAQkw7qLrXRFCTZ0Dmni2adh2EJRmpS26wEZyCCEOP5uFz/yHUFVW5UhBVA1dTXgHsRo0MWt2gSJCU6jxknTxgUqzDqtQNZi9cFiSqpZpitKzj3CFXBU0Wn/NSeKuCIJJxZht15MAL6KHmeL+Nvl/7o0Oktp2PsTUAhoKmE1igm1Ug/TXfHVxNisitm62HFYOQdJTaCTz1Qv0czT5Z0V+6Q5BysFJ68+yGQF4r4n7QJqEylbu7EMYs2HcwZLJy9EOHalNguwxkEAZH/ERPceXLzw28MJxBLA4KR9KKLDEUCsRbn1hC7P5eaGM1mrbS3e7101l5k5HasPZ54BAIxMJY4vpmDH1qYXmSSnZprMRPuAxKWcQ2B+ifoWhLRmA0H909BWNwUyJKuSM+btQgj30ZMNV5dkW2WgIFipBfVS+X6B6+EbcmalG6eriURoj/GGEHFD7XTvSLSROT23a5xqNs4DpFm8EM3torDhILIj3nsztcHLdjkZ01vCPL2osO3n+zUR1kzZ1NpMGhLAt2mzzsDK9cipmoEzgAgQvxliZmQ8h6jNSFV6kp8p8kdPHmCIzN/GqItjZk0amoo3p+O0aBAL5XELen3xdt9hmitO2QmNCfrctFR52Lku4hYVIt5OiEitBn63O1sGn+BfOPhN0oRiKUBQbWu2FxIrXrMU+ikN4YPaL/9cs57prBZfoA1xxO50iio+IRAdDeRcefzxf4IlJ3kmy1c4rEHIlQNe01CPLkIRJIItZrJwxKYYFKiZiFivw2mBleOQEwJsMh/Qq59aIm2Ybb9clba3sDfh4/fSCd3kNmgigkyZHjvdvEoBEcn17uHzLGCGjTO4/2DSTOyQ9XecVUGzKTSpqQB9OlBJ9+g9mYNtMcJGNjvpKHiJaL70oAwcIh+hlXL/3tQDo5tkb1LqrbGgPrnEnBp3nnJyUS7S0dZAiKaaH1jwRlgpL0z1kVHnYsE1yRgQLErXdUT2gz56A6q4vMl99MN5QjE0oAAE0doRojLyzA9LSUQZ+5F4G4lsMcRu8LpKUUEYmgMUXwTW8xips53aXqBnZ8vStgH1UyJNyWv18IAdQ01jnM4PX/2QqxcgVCaQCTlDBBw/u/l+oeWaDZrty8Lc8Fc6XkW73+RXHbS4VoCOFq2Qt6VIVb9vCJiVXGYwBJHK7Hhb5Jm5LQU21nOOYIniRxsbrZF6nRDy+kE4RKE8SXiHui/GKfqQT/Dqo7/TjiD7TjFpdRCL1zAlSSrUeOUHfUujPz+nbyaE22chDMwwXcQDUoTiOmtxT53Oxl/nizp2jASgVgaEITyPlkRX4RS4PWswydjJ/4gBYO4jJ/ap5zBjUzccycSiGWlb3j7RzBGk6AjUD1v9gWofAektiyBKKnq7fRvEzDA7kBAlZLNWlZ2bkLlYZLLea4IwOAkGrPjt5lY9dJSgljVlDB+gFV3vZjezvPltYwSOCGSnMyFAKuCS69h3hlgrgOdmJo7JQhEMSnB+WlWd3w9DXSLt2vTDmH4i363K9KWji0YFIKOFs45HzHXAFX4kncTIqoCQ979gHHVC2VJ1wZtw2zrfjMoq0vOe5JmbhLGVwEsbmoK+r0JmdrbEzDwZQhEjclYS+zvQ6sXyzdW9O0kArH8iRv4lSibh+2FJAmkCUAT265uw9sMi5sC6eyM9bzZFwDfHhTcUYzARgRDH85fLNc/tERByLFj0ZX9efndL4h7X0dMZtiJDsIkoi0nDvMGlAODQpKbWcB+xWaThLh8jMqvAGXTpjKbSl2pUyLVE9+empI+iTPAU//BMxF7PSI15YOOxIDEiH6S1R1fh1ERiNutz7+lwWDx4pRAPOp8hKsRDcsSiFU2JHI5jL1Avt25abScQSmT4ZViVVQM3nmMmQnxJAVZ0tUV6YVz9kGq7yCwzWUJRFVHJgjoi+9HgtPl+s7enU4glj5315dUeZWEFBPXAMj/1EFC1DRdiMi3EFNVYtDTcGSjGOkh9pfKDY9crdqfS3jHFl7nfYWYjd+CPI4driVoIUQ4TZrSbEYxr+D1eKQ/pn0wAw/KWoT7EqtpfvHGz9sYeHEgH1b//5uUQZ/BO88Zl4BPZ0x9y5lI5mqUTJk4gwECUfUyVi37BoXsRrtXSv7dRzNYsiTShUedj7XfSd3aJYKOSIOO3A8Qe6F899cbt4UzKLVwnkzd38Oz4zhsOCGTMUcIqH50zj7E5AhMc0oglo5AzISWvOvEZE6Va+9/eecSiOUsAE1uqYn8uYQSnEQAihxZUzd3/5YVK/r6Fs66CBt8I3Hh+OJBT4KOEts71v8j1z98TSGJy9j0TZTGbMCaFW+gPJEwEWqKSF7V90DW0tbpt2ItFPI2Hp+GZ/shXgQBRP9Ad8cLibkwxMZM+rNq317Qx1MCcbCCYPAe0GPZ0lebpFRrPRuxSxCqExd2Kc4gjf1X/VRyb2T3KlSyW4GBIumtxfOwwVWJiVXmAl3GBvTFPyTWBAy2kTMoAQj6cBqINuzqLoHxseYjvfDHJ793P2r0+4T2fcQuLhOOHBMGltj9HOc/koKBGUV9gp3B9KR5BfhD8ekjFnXOmOCwnjdqDtXFR50RWPtNVGpSArF40I0YvELMpXL9g9doGwG5rZa/2ra+rSS5q6CyAhdtStNr6QCxqABTqd98FO348lWq2gzt7Z761mmITi/2LhiDc3ngdkAKBXSKZUmEyiMp5A3LnuQ9JngbdtOJSRYqcyWi4/GOEYKOXD8YNDZmUtNuF6yN3RwMslkrknJZRq4CgiK3ZuHwTTiD2+ipSeIMGE2tk61yCP4FnF+ZBpv0T7wVxHuVfar1xEPH+59jzHG+XNCREhEGAbG/j/WvZ+XGR17dStiuJKwyQNYy9hmX0/v/ejfDkpcIEILxsQafaXz9KiJzjRGqvC9FIGpyhVk0xpmL5YYHr1YwtOPKAl1zc5D2R5M+jjY5aLpBMmvvQXgu5egG3HnqPcbuhchJADS9WHrMmpam37v3gRxSdLU40QY3Ivl7k3HqdKU5CMDzQGKHD7fFxeBjxcv/IOZm0PGoHynoyKM+AYPm5oCVK0e4dty/HpJr1Dtenu+tAwZtBQLx6ItQvgNaKp+BpvvNknffZ3P1hZLr3DSaoKPRAcKaCa+B3J2kREty+1kB54TDx8U88K7XzQE12uCcqikZdKQxGRsS+fuI3Wlyx5Ovahsj2DCprzm5MamQS2/I7YyJn7Qc9f1h1wKEApEzcvHUzfzb23sPARnnvKopSSAaQWQLjovlxge+m+4sPyIYdHbG/Tf+Bq6Iy6hALJu1SWUgfThlEgcFEpHE5nuOhOagP+vScBlfSC4TzMFmTPHtRhTkMVb99E9srciI7/kdLnoCY2wJglEQsxdi0hj6kmAgQB74O7qXfQMwpW8t9g9gMLAeILlG3e7/GkBBFzeFSZzB0RdidEnKGZQOOsrYkHx8K5vfuFhy208glpJkAmj9Eeo/jjDOgDoncvj4mNsbN3BItcPForZUPoMCgZiPO8m7rNzS9erIBGLKfr/zxHFsCRch8g5gI8QddLf/krEr4ZU8Y3XDa9Q/cjM2vEh85Axi85Fw8f49fGP6JjKoei9iS4MBGOmlz18qNz10nbZhaB+xbclir295P2JPQv0+KL8hP+n7PPu99aPqWy4Nr/V6N8YvZGj0m0FjEH0Hh9ROo3P56hJ5+5I2TPvwFKTv3eketkUbWXUrabvaPW0Y2n/2Z+pbf4QEh6fcSslhLqHOFoKO+tD4MlavuIKRLxelVZjbY+rmvhsTnIbqFFRXgr+LNe1PpSHUf5Hko2ZJbi0umn0hRq9KTcTSQUeZIENffCs2uFhyKzelt4zdWLXFkM1a8psex7m7jA2sd7gjxkfceegGptc4nBNKgYFLgiAssb+XKnea3NL1ygicQaq2t3vq5jbSl1lBkPkWQeZvsZnPIuHtzGi5hG2P1R+JWStslqvxrhcR45zoRfv38D/TNlGVXFKT4blpvaJYYzy4fjC4rWzQ0WBzxFPfcglibifI/BNBeBFh+G2qNuRonJ/eqVDZ6kYE6F2/DOXloTHyYvDeYYK3U2XeMdQ86NdQkuAwm5+Bse9Osg7LoAtLCOq3ENGx1eFrTz0Zam/D559PtYRRnEKpR0SJUU3BoClk5LT1SR6K+pZTseGd2PDzyfhVfw0bLmXmgqNBRl8h6S1lJiQeAV149EUYc0Vixpe5tVgdGPri27DBxYk3IQkSHMv2GHLAM5294wK5zuf9y0dMcHZp4xv+kBqHiwVbYgk7VW8zxuP88lUvRx+VJV2vXNXUFApt6UZsM5C1gyYwselntPwN1ixFwmNxUUTcF+HzfYjshecrqd9cx4ZTSKLemvfb3CXiblYf8rH9ety3p22m2vRf7i4674wREL/JeF0sNz143W3ZxszpORDaZEjfBkqFKWCpa/1PjPkWInsS9eSJowiXzxNkTiD2bYDSfNzo+vX8gz2gPxl2IkridjIhjlMBk/jvm4OkTc1BWrlaMXoqYqtQGZxyThGroPfxzOYSrubh0hnTtDhkzV3/C3rroLTpW9HMDKhuRPh7VndcSXNzNUzzA2M3ZG0MRFA2tP4DYm8EOZC4Lxm/uHcLJpiJc//IO08cN3J5ubcYEPRn4Gr3ev6cxVi+DYQlg47AU2WFPncLr7rzB8AgySOyPZ/+NmSzdnDZgwBy7r/nzq36xIql986bdcKKqxry5x5Q5TTVDIokVjQIjVmz0Tx13Qv20i/98sFXLHBJV1c0OAw4WVPpz+mnHEjgLkb1s4jJpKmuwkHpEXsJayYQ9TYCj7B2TNKwazPNwf2dnfGeU+dfvnjmhpb2g3unhnjvtbhkkk/4d+3FyK9eDS7/wB33X2cQzsiRV1aWfkPd3IkYORyRL4M5JnG5eZ/WSwRwScJa5jDtw1PovH0dg4ukjsSwG7MMkbOT8N4UuoQAn3fY4BzqWlewpuPmJGFNJ/3PbJg3D8wncZEfkjBEUYwxeHNPuSQ3RdK1xEObEDzw78TyYSSYVj4j9yDTQfUKVndcmayBzt7SeAMckK1h/MYjUNuGmrmIkt6ILIyfxeUdyNH02unA42XSsL/1ZHFTIEs6Iz1v9iUoVyIKvhRnoA5jPXl3M7+PL5Q0W1nBLN8RIlFAC3xNISdjoGBkxYo+PWvWuxi3+Sg86mKR0poBBIHKva+GZJ+cULc+MjcEDfNviXFPouaPmL5eogkxVX01OD8JtQcAJ0C0CIK9wJPmbQxKao5GzFgiMNkpSiOGZ9ZdhGUqTrSkX0wBo2xWkY+vqeXGF6s/IfWtk7z6XyFuDWFmPfg83glRZhyBm4LTdyImi8jxydD6AdV+6KkuqIwnk58CrEuSnOS2Mk8oodxL5N4AmVDM8Hsw3MCM+e9AXQc+XI/6SRh/PCr/H1LCrhcR1G1B458OM6lGaEc2MWOiefMR9qQ/sdWI3I2AXExD69tA7kH1acS8jMn30pfxVLtqYvbFSB265VR8cGoyZK6QgdsMwxeLaAZnw784zuC82Zcg5or0bk2p+BdFjCV2m1B5g8Myn9N3zqkZeiN2exuhAuIx8hyqD8h1ud8DBAJeLzjq3RD8EJVDiGNvi/cMTsEGys9ey3D6qomsj42IlWNjmzmWuFcR/QM+04PNR8QyHszeGLsfxoKLGHSyFBNQSICLIrwmgURdY5CGPbmp5PS8Of9FYD7pIq9pjZ6SYNCrhr9dM54bX6rCBjrZm/Ay4DLi/J+IeRmkF6xg/ERUDhwoJ+607G030lNZfTdPHrWSbK0tThRahhD11evRnjuwdiFxPDh56ECCXBP8I85/EuNeRPVt2MwEfESR31qJsUGAj35GrUvTmbdv9fAAcdR/8DxM8G2gXDhy8f+JTMYE5wPn46P14F7A2y0EzuFMLaJvx1ZPwkfgnabkp5Swmx02MPjof6ll7SD37FvaVJAcTs87+hJEv9UPBiVvS5LEnxgzidBemvzFGDtcjECfe0EXzfkXrnvoO4Ge23QQ3txGwCFpBWNbDgzueTXDmasmsj4WjChevSfqiZNqyfYwzIC5mnQ0dsQurTJcciEl6rCxAXF8Fb2v/rxEqu3tIGowIng9b/bnseaTOO+sFLtMPWAM5NXwse7x3PjnagKrOEU1TitBG7MfyH79zde00lDcF/UXeS3dijRNfPwK3vwztHty/bzDViRrWZnLUzf/ZnBngtqUTxi6aOIoRqQGMdPAk5pittjNqAZ14PUWHv/J5tGNsSh18xdgzLdQX1U+zqDkRRjFRWlJPJmMmMkD6dFS/Ix68um6KD9+xoao60Xkv5KiL1vVanZ/ArG93euiY46G+PK06tPWKzapKvnIpZzQWLfKY83+WLmC845+NsAEHyOwdUQlKxolBGKg+uPXquSMVRPNhpRoLBRATGvbK+pcUfnQ5PdlbswRY0zyPh9fS2bc37OmI0/uwVLklW4TArfjddGsfVEuSyr1Fg+4V9QYVRS9sHuCuenP1WKMkp730n8iJ0U5hpVGFVOyzF1hgBEwoUWjV/B8hDV3P8hA3P4oJJcskjVNP6XukVsIMwtxcR9o1bARDtKxL9QeCEqOs82ExH3LWLPltoRIHoWWcnBzNaKfTa+Al692pZQCoYHxS4KSho+fDOIJisEEfFJUJX4V4UJWL7sr4Q5KgIHsalfkNrz/xaXJJTCiLNaOS4sdj+bIF5Bg59CpAs47AmMRPcsgOpfYaynNwKPOhtb8ZH2tPX3VJLMhkshI6StwaZn4wZ/SufZUXVL2KwyAl/H+06xedkGaJ78Mkz1iibdhCU7ShCNi3oswnhLec6+qxiCbJTDnrJlsb3qp2olJanSVSJ9givtWxjxQzSPWJOnJo1+CHk/3sl+w7dl+NS2YomTsvxJHj2NMVRpkVGrsDeXulhgT4qM/IvJPCZnYtjWATfo2rqoWMceUzWacbGrBhkGy6dWV9WQVj58pM34RGEFCi49/A9LC6mV3UghgK9Xu8tef3xygUD+S1jf0+/U9SVuNmU5gQHT30HZETJLVQQ83wMbUoVW0cU0msMRu+UWrav9jQ8Q6CcPQJ4EtbtsXuHpUI2xgk7Jf8T3gPpSm2t7KJOrrRT5wFQWjiKyn5o2BGoKN/cE9m8ocQB5rBWHTva/af7n5xbDDhDZAAgvE/ZWBt6VvhfoMQSaD6kt4187qzcezavnv0yi77Zj4dk82a1h59xosF+DdWmwYphGDW3f/KTEmsHh9CdVFdC/73Tap3GGfB+0rURVNUw/QZlQ/h4tyiLXYcPvHD3WgEFSFoJtx+cvpC0+gu+PhrbsZpVQYtKSp0N8Eb4RsonypeUlcvalMrkm1Kn2W2EspzXWXURsJBvzJIHJzEq/f3wlNIqJCS+TuQfvOevYPy/8xML5VffyfoJsIMjbxS5cMXStxyIpgAkOQCfHuF7j8Ivo2fohVy349cnqrNIOO+FtIPIWDU4BJEjTAYzzW+Xrh1p60tye3EnrML1FZO8h3qumtRWNgi4v5+Cl3/rLtvfuYMyE6S727HxMEmMAUXXAa6FcpBUIIMhZlM3H8dRytdHd8MXXt7ZjNm9j5hic7ugjcArz7OSa0w9pX3DYRIQgD1D0CwSkDWsqo2pI8Zw82oXobNpRBGZwSL4MJLPDPrO74Mt0dp+P8OWi8HDEBJtz28TOhRYnw0TV4aWXN8s/wzJ2vbyWlWrpi5T6GhJepT7WiHjT4HQAr1+2EkzgdS63qQLV3UBBZShFaAdayOX6xv+rTkq4EoFz+CmK/gaA/W/Ou/KTGpzUYvdqwh9xI3n0fK5Ik/xAhDAyxW4bYrFz/2OvZxsZMvGr5o6xa+lmsHIm6S/DuXvBRQXtMNGsj6WfAOyVpbjsXfx0Xf4AqPkT38ht4prM3sQtH9ImnIciz78PFV2CC9F3ponRRF2L/Ayhk7hlQonMP9oD8X5x/FWsk/RhUe4jii4MbHrrptmxj5oFf37XRP7nsFsLoFFzUjIu/jupzDK4tONAvSd/fT+uh/ucQXYjIUXQvvYynlv4mDboZmzoA4BOSccVKauypuHgR3q8eNO7FbVPfjY8vwLlWuu94OA2i2pa2JJWbMsE/EUePYAOTWiaSlErP/xOrm/6bxmwGkCQewp6Bd824+Mt4vyqx7bcyfqp51D2Md20E7khWLb2ENUs708A0GRWAiX4G7x5GbPpsk0T6ef039tjnZ8mztqdS0yjHac3tz2P8Zf3gJkYw1uLjtSD/wYtLt/TrtAW/7Y2//V+MPwenm7GSrk3ZNR8jEFghH19O6JcWYM1w/ntORd2H0h18Owc/fLu0ExciotKAkAF1sLk54IWayQizIKgDPRjV/UAMhvXA0+BfRTIP0ft6dwIAqSSXgLY9McbM+Sfh/UdRJiDmHqr7Eta8NJIk6d7OmX0IVi5CfCOwGszVct1D3YNzf9PcbIeU95raVMvEvQ9E7RGoaQA/DZXahOzSp1F5DcMTvCFdNGx8fWhpsJ0VODPouXVzqzDhUeCPAX8o3tRgtA+VVaj7GfBb1qzo28H2JHxOw/y9EU7D+2MR8xJwK6uXPpLeLSi0zQx5R93cKqqqphBFzWCmgJ+JZ0LijeJJVNaBeQrRlUz40/NDSgNum5epUPfhbYhZBPJO4A1U7mHN0rvfJHU7MQkbFrwTH18IciBifkPeX80zy14qxYv1r81Fc96O6EV4ZiLSN6z+xc4nQ0UNXvpQvTktOShbZeyLvx2xMMdoBk/GHKXH7DnbfatOdnBctqWvshP+dizGVtghJ/l2j99bMpRZd9N2y5AGFmrVb1v24HThDc873z6YJBzDmo1pebJCsdTRDHzboMEffd8G1Sko2zfdxXM3rG07rV3bPO6jHL+xXBtm4D3tu2JuBo8RozHRitbmrpLtyhZekYpUpCIVqUhFKlKRilSkIhV560oh10BFKlKRilSkImMgUhmCbRor3S3bVDe3Cht8BFSwtXeyMrepMl0jrvcKo15GKirmti0k2e3A4J0fnoIxK8B8Dc+/E2358oAJUZGh49VWOQArgDAmUj4W/03lCLKDblq2JXEIffkzQY7E5Y9hkxyKlWuS37dXTsEi7a7dU9EOKibDDqiKafjuvGNALsAH32TNXb/dTcyHpA0zWtvxejzdy95XWc4jjNMB2RpqNn8F5E/01P4Xz+d6KkPz16shbOfpnqqYnqOQ4ALEHZ58nzVv8oKG6QveQf3cFvY5cVx/nxrm741nb2zwHhpavk79gjOZ0XpypW7iMDCom1tFzZarqRp/KXDCX+GBWAGEfqmbW8XM+c3Ut+6/3YtA2IJ3mzDsglNlcVIazrrbsNVLmZT5VHKbss2g+j5ETkP9ZpDzMfw36GdoXhdWFnzh6nRzgAmuJaw6i/zmB4CLE+2gbVuT1lQA4S0uae0EezK29j5Ef0Rjy77p6b6NG0UMQojKmz1eAkui5PafPIZ3zyDuyeR2Zbune9PdTN24P3F0CmK+TNRTz6pxx9HZ2bedJtJfEBikFcLqx91EkDmTqO9RlHPo7lg7BrkZ36zLbBVAGENxkHMoLxP3PQPmSYJoY3pNd6Dfzc0BTYvDQTkMdi9T59DWehrmHsvqjrMw9ij27bmdurknUTf3bdAZ09kZY+1ZhLVfgqopSf+K2HST9LMppKlpO/raZtLivFL2d4VPNmt38TgKtCt1cyfSG9xApvYMot7Hsf7sBAzK5GYc/ozm5qC06VXQLNqTmhV/YeZZ8BcLBwc3V1NV20RQ+yhu0wK8riYfHMzMD47nyXt+029fdvYXOhlqd+4OJ1x96zRi/QEmfDvT5p3Ak3c8irZ+giC4HB/fRGP2kiQXpTjUO4KSuSeTRC1JVaftlHZPV7nbe8N+19W1K8cxubT3zpNq6bFXYzKnEvUspWfc6QMkYs6Nom06NMfFsP7OOHkCYsfzZPuLFQ1hd5fmtgTkMuPbMFV3E2/5KquW/x4ND8TJ7bigg+nzj+xfEA3zr2fmgkdpmPdD6k+ek3y/m/jwrQ9QJmDsxDRnoYBksGGA+smsnKyDNp8tu7hnzm2mft4dNLR2UT//Uepbv8OhrfWDTryRx7K+dRH1Lb/kHScdWMRNNCyYS33rsvTZjzCj5csc2nIwY1qncxs0KkTpDb5JkMkmqRr1SGq3/Jz61keob72CafMPSv6u7OkPDfP3pqHlBzS0fK7oT+rn/SPo7/D5h2lo+Q0N8/925DSAFUDYVQRS0pdNLxYW4QRgIsokyFostcl3OhHragaWkB6AymFIeCpG76d+3t+lPnyBlbtI9U1LyD+5fDUmOgGvh9B910OAsmrjf5H30wnHnw5LopFPS6D+g5fg7b2Y8BSUGYgeRhBchJNfUDfvxDSZa2kweeGh5Hvxf0PV+GNxmWnJL7LJvYmG1q8gugxj5qE0IHo4Ev4DTu5lemvTLgNXlRpc/CwaPwdkUN6B6Lsx9mMEPMr0Dx5XZDoC/fOtZjpwMirzS2yZg0D3BKpAjsDYb1E37rb+dHIVQNjlUsi9l6itXUsSVS+/6dPEfR8irL0Ico7Vdz+O+lPwnMjq5b/qn7zujhPoeW0qzn0W9Zsx4X8x4+Sm3YCQS/NJ/uRpVt35x/75apohaN+RxJtayi7ApCq0Mv3kkzHht8G/gY8/xlkdEzG9+xPFX8GYfTDyFQ5bsE9/MtfyQ5zHR4PSmuUcMx49EzGfwusrqFtId8cExE7DxV/GBNOx3Jh4dtr9CNrLzpHuZR9l9d0Hs3rZQXQvexvdHRMw2oh3X8aYPbCZ61OvU2kzKEntvhHoK352x8dZtXQyqzumEPs5+OgPBMGHibdcBmjKtVQAYRdqBsphC/ahMbvnkI30TGcva5YvHRLXv2bFb3lq2a+H/B0Ynr1/PWs6/hP8vyDG4t3Hdi/A62e1PW+8cCCGb6LyLQ5eVFXyP3qmJUBh3aWINcAFdC+7ipVZ4cl7X2VNxz8QR98gHHcEvXFLcuhnZQRokiG1MRqzGbyen9SgkMWsXnYjZC2r7voT3R2fw+eXEFQfCnpiStzKmz9mw6pNP7l8ddK2+BZseBAi84rMn+K9IWU1L7KWtcsfRdxHkACUk2huDpg2zVcAYdccoAmbPPNDe5F3S4g3f6t4Aocz3iWvCHuamwOamwN88Gtc3yZEG8qss12hNQwNqvKRAV5H2YjbUnoxr8xFvPOccYjug4scq5ffQXNzkGgCaV9FfogYj7EJLzCaxKaFoij5jdUgk9AYVi+9M2HkBz1b5buY0CNSB7ALyrinXoDCJ+cSlT5rUbkV19eL6vvLtmmg+IuW1dzIuQQE71lF3PdHYBKv7zE+Gce37j2StzAZkiaM3tPneZW34zmk32Ztvs8wZYqybp0wZXBU4crBQDEgv91oWbMiT/3JipgIJS6xDAz4Gsha6jYGvDv75nb3Dystb2v2vGAU1I68vdqELQ/FGKsIQtPikM4lcZop29K5oo/6lglsb9LbzARPtGXgfkdnZ/Lsl6cYOnN56ufuhXoDVPXzE2vXml12eq5bJ7ywUWCFQ+ZlwAQoe/ar+F3TPFngD1je1iz8yfjUmrBDDpPCuio8szMX04bh++wJuo7A5VMOSCuAsEukOeDXd22kvnUtNjiMutazWdN+M53bXA8hOR3VnUZYtSf5nl8N1aNMHgjx/t2Qu541ONa86Z1N2ji9dQ/E7AnuEaY3Rjxf4i8Pvi/Dms5eZsz7PZJ5Fxte+BTw5dSVFjMtOwm2XIKPQfzo7ftCHcWVuU00tDyPCWfRMP9TrF76tX433T4njkPsBWmBqfwgzcMNcknuComZcfIE1P0tNmORvukckK2hK9cDXZAbNMYz507CBxbxm4fwVMXrynDz3M8QZiYS51fTtXRLAjBdUQUQdoUq3UwhhOA7qDsFK1dS3zoZMSvRfDTq7hkNcHwAaz6Ni17Ahlckv7gtKdzqgl9g4hixZzBj/sN4fS6tS/DmnQQiCn48yvkEVXuS37KMzva4fywGly17OzHPAD7zNSTKYu1/MGN+SKz3E1CF3/wxTLggKWe/XYSfIFxOHJ2EsV+lvnUSnp8jfjxizsUEH0nK0ksdDfOPHaH+4ps4dq4ABifi8iB2JuO2XMuM1mvxmsQoOOMxcS3e/l+Cqglo3w3949uw4BBc39uxJkKtYJiM5ySC8FLivtdBLgdg2jS/i4Hvr1hDSE4lobtjGfXzLsHYr1A17htEvdvYNQPV4yC/ZRXqFtG97E/JqZCWYF9zx1PUt16KyFUE1Tcnz98FVIKtAmMhv+UedNwt/cVSlBBrbb+h03mch07ovvN3NMw7D/SrBDX/Cj1ggqRMiMuvxmYa8NsFasKqZb+mvvVc1H+bTO0XiHu/gK1Khi3uXQnSiHA6cPqud8YpmCowIbgt9+Pl6xj/GTLjziDOnwGRJuXv1GOqDDYD+U05Jtqk2Mu07CR00zWE1X+TFL8VwVZBYCDqfRjVf2XNsscA2YYiMxVA2Hmz3Wbobv8O01ofQHs+AP4INC2VvlUbWQWI6NvSiev5GWt/+ixDI9kUMHR3LKFu7uPE/hhUGoEMb27wjRL1PoM1j+DGdbI2twG+mHge1N9K3+YXEfPCUBu2zbC6/VZmfPB3ODkRr3PQuAcvd2FdNRLm0Hy8A2N+O9NO7MZwEso7ifN5PD9ACAirOoh7fw/+t6gIu85HnxTp8vFmNPopzt3HmhUvU9/6INHm4/ByFDA1qdytIS5+DR/9mE32J3Qv3QJtBndfH8H4HOpfQiUGzeP6/gj6CH36GM8sf2kM7kfsPszcX4YMmRBTXBxka1L433Klz4Y8P82+80WFL76JYzhkwY0yNHhQu5sWh2x41rBmRR/1LXOomvBr8pu+yOqOfy1eF1lDU08VXU29NDxyJUH1hbi+E1jVcV//u5OSfAmgFEjFlbk8DfOPJTPul0Sb/oNVHZ/ftZmKCnM0qHjL6O38YWOctdCoxRt/Z5Xvq8gYgMKOgOPW/n93cCeN6pZdGoI773jqF3yNgz44tWgB18+9gndklfqWM5OvRrikU9/yAw79sNIwf2b/dw3zP8SMBd9kxsn7Ff/9vBtp/IhjRmt2q8/edWNn+r1NdXMPoGH+uUz78BRmfmgvZpxy1kBo91af9xcV/l9JEPGXKIWTu77l04TVX8H1/Qr4TyLWEupEvJ5GUHMZcc8TeNfCU+95YYgG0tQUsmH/esSFwPsw5gto7Jiw7iC6uuKEZGv5AkFNO673V3i+igvWYPw4xJ1BWP1Jot5HCVlAdta6pLLZbqhON2YzrMzlqW+9leqJp9O74QqMWUv1Hl+h5/XrOaLmwpQT2B0T7FY4hIqMUgpka7j5SiIOIAg/gXN3YvU5VMYRVu+Ji57CcBbdP34OfpxwEYXKyxv3OQMTfwmVEGOmJuXbw3NSMEjLAC74NvGWadiaRZA/BqJnQcYR1uxFnF+FzXyMlXe8RPuy5Nm7o6xcl7ZLHyG/uQkxnaCv07fhT6D/m7oi4a8or0RFQ/hr0Bb+NP4kRM8AjkDZgrE/QXuvY/VPnh52+iWbt27uu8FegWgI/AIxP2T10sL9j4HNfUC2hvGbTsDLBSAzQTcAd9Jrb+XZu59+y5ysjdkM+Y1TWLMiiep4e8vB6OY/80xn71/bcvl/YY5s3F+8C0sAAAAASUVORK5CYII="
+
+
+def render_login_page(error: bool = False) -> str:
+    error_html = (
+        '<div class="login-error">⚠️ اسم المستخدم أو كلمة المرور غير صحيحة</div>'
+        if error else ""
+    )
+    return f"""
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>تسجيل الدخول - لوحة إعلانات elevenz</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+        <style>
+            :root {{
+                --sidebar-bg: #071c35;
+                --sidebar-bg-2: #0a2544;
+                --main-bg: #f4f6fa;
+                --card-bg: #ffffff;
+                --text-dark: #0f2540;
+                --text-muted: #8592a6;
+                --accent-orange: #f05a28;
+                --border-color: #eef1f6;
+                --radius-lg: 18px;
+                --radius-sm: 10px;
+                --shadow-pop: 0 20px 50px -12px rgba(7, 28, 53, 0.35);
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                font-family: 'Cairo', sans-serif;
+                margin: 0;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: radial-gradient(circle at 20% 20%, #0e2c50 0%, var(--sidebar-bg) 55%, #05121f 100%);
+                direction: rtl;
+                padding: 20px;
+            }}
+            .login-card {{
+                background: var(--card-bg);
+                border-radius: var(--radius-lg);
+                box-shadow: var(--shadow-pop);
+                padding: 40px 36px 34px;
+                width: 100%;
+                max-width: 380px;
+                text-align: center;
+            }}
+            .login-logo {{ max-width: 190px; height: auto; margin-bottom: 22px; }}
+            .login-card h1 {{ font-size: 19px; font-weight: 800; color: var(--text-dark); margin: 0 0 6px; }}
+            .login-sub {{ font-size: 13px; color: var(--text-muted); margin: 0 0 26px; font-weight: 500; }}
+            .login-error {{
+                background: #fef1f0; border: 1px solid #fbd6d2; color: #d13b2c;
+                border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12.5px;
+                font-weight: 700; margin-bottom: 18px;
+            }}
+            form {{ text-align: right; }}
+            label {{ display: block; font-size: 12.5px; font-weight: 700; color: var(--text-dark); margin-bottom: 6px; }}
+            input {{
+                width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+                padding: 12px 14px; font-family: inherit; font-size: 14px; color: var(--text-dark);
+                background: #f8fafc; margin-bottom: 16px; transition: border-color 0.15s ease;
+            }}
+            input:focus {{ outline: none; border-color: var(--accent-orange); background: #fff; }}
+            button {{
+                width: 100%; background: var(--accent-orange); color: #fff; border: none;
+                border-radius: var(--radius-sm); padding: 13px; font-family: inherit; font-size: 14.5px;
+                font-weight: 800; cursor: pointer; box-shadow: 0 8px 18px -6px rgba(240, 90, 40, 0.5);
+                transition: opacity 0.15s ease;
+            }}
+            button:hover {{ opacity: 0.92; }}
+            .login-footer {{ margin-top: 22px; font-size: 11px; color: var(--text-muted); }}
+        </style>
+    </head>
+    <body>
+        <div class="login-card">
+            <img class="login-logo" src="data:image/png;base64,{LOGO_BASE64}" alt="elevenz">
+            <h1>لوحة الدخول للإعلانات</h1>
+            <p class="login-sub">الرجاء تسجيل الدخول للمتابعة إلى منصة التقارير الإعلانية</p>
+            {error_html}
+            <form method="POST" action="/login">
+                <label>اسم المستخدم</label>
+                <input type="text" name="username" required autofocus autocomplete="username">
+                <label>كلمة المرور</label>
+                <input type="password" name="password" required autocomplete="current-password">
+                <button type="submit">تسجيل الدخول</button>
+            </form>
+            <div class="login-footer">منصة إعلانات elevenz — تقارير الأداء الإعلاني</div>
+        </div>
+    </body>
+    </html>
+    """
 
 
 # ===== النطاقات المسموح لها بطلب الـ API عبر CORS =====
@@ -349,6 +498,49 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, error: int = 0):
+    """صفحة الدخول المخصّصة بهوية elevenz. إن كانت الحماية معطّلة أصلاً، أو كانت
+    هناك جلسة صالحة بالفعل، تُوجّه مباشرة للوحة الرئيسية دون عرض النموذج."""
+    if not AUTH_ENABLED or has_valid_session(request):
+        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    return HTMLResponse(content=render_login_page(error=bool(error)))
+
+
+@app.post("/login")
+@limiter.limit("10/minute")
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    """يتحقق من بيانات الدخول (مقارنة زمنية ثابتة تقاوم هجمات التوقيت)، وعند
+    النجاح يُصدر كوكي جلسة موقّعة صالحة لمدة 7 أيام. محدود بـ10 محاولات/دقيقة
+    لكل عنوان IP لإبطاء أي محاولة تخمين آلية."""
+    if not AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+
+    if secrets.compare_digest(username.strip(), DASHBOARD_USERNAME) and secrets.compare_digest(
+        password.strip(), DASHBOARD_PASSWORD
+    ):
+        token = create_session_token(DASHBOARD_USERNAME)
+        response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=SESSION_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=_COOKIE_SECURE,
+            samesite="lax",
+        )
+        return response
+
+    return RedirectResponse(url="/login?error=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return response
+
+
 @app.get("/api/status")
 async def get_status():
     # ملاحظة: هذه النقطة متروكة بلا حماية عمداً (لا تحتوي أي بيانات حساسة)،
@@ -504,9 +696,11 @@ async def get_dashboard_data(request: Request, date_from: str = None, date_to: s
         "range": {"date_from": date_from, "date_to": date_to}
     })
 
-@app.get("/", response_class=HTMLResponse, dependencies=[Depends(verify_dashboard_auth)])
+@app.get("/", response_class=HTMLResponse)
 @limiter.limit("30/minute")
 async def serve_index(request: Request):
+    if not has_valid_session(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     html_content = """
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -993,10 +1187,11 @@ async def serve_index(request: Request):
             </ul>
             <div class="user-profile">
                 <div class="user-avatar">A</div>
-                <div>
+                <div style="flex:1;">
                     <div style="font-weight: 800; font-size: 14px;">أبو بكر</div>
                     <div style="font-size: 11px; color: #93a4bb; font-weight: 600;">مدير الحملات</div>
                 </div>
+                <a href="/logout" title="تسجيل الخروج" style="color:#93a4bb; text-decoration:none; font-size:16px; padding:4px;">⏻</a>
             </div>
         </div>
 
@@ -1024,6 +1219,7 @@ async def serve_index(request: Request):
                 <button class="time-btn" data-preset="last7" onclick="applyDatePreset('last7')">آخر 7 أيام</button>
                 <button class="time-btn" data-preset="last14" onclick="applyDatePreset('last14')">آخر 14 يوماً</button>
                 <button class="time-btn" data-preset="thismonth" onclick="applyDatePreset('thismonth')">هذا الشهر</button>
+                <button class="time-btn" data-preset="lastmonth" onclick="applyDatePreset('lastmonth')">الشهر الماضي</button>
                 <button class="time-btn" id="btn-custom-toggle" onclick="toggleCustomRange(this)">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>
                     نطاق مخصص
@@ -1132,6 +1328,7 @@ async def serve_index(request: Request):
                                     <button class="date-filter-btn" data-preset="last7" onclick="applyDatePreset('last7')">آخر 7 أيام</button>
                                     <button class="date-filter-btn" data-preset="last14" onclick="applyDatePreset('last14')">آخر 14 يوماً</button>
                                     <button class="date-filter-btn" data-preset="thismonth" onclick="applyDatePreset('thismonth')">هذا الشهر</button>
+                                    <button class="date-filter-btn" data-preset="lastmonth" onclick="applyDatePreset('lastmonth')">الشهر الماضي</button>
                                 </div>
                                 <div class="date-filter-custom-block">
                                     <span>نطاق مخصص</span>
@@ -1156,6 +1353,9 @@ async def serve_index(request: Request):
                         <button class="toolbar-btn" onclick="notImplementedYet()">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15V6M18.5 18a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM12 12H3M16 6H3M12 18H3"></path></svg>
                             التجميع
+                        </button>
+                        <button class="toolbar-btn" id="copy-table-report-btn" onclick="copyTableReport()">
+                            📋 نسخ التقرير
                         </button>
                         <button class="toolbar-btn" id="export-btn" onclick="exportCsv()">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
@@ -1325,6 +1525,19 @@ async def serve_index(request: Request):
             function pad2(n) { return n < 10 ? '0' + n : '' + n; }
             function toIsoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
 
+            // يحوّل تاريخاً بصيغة ISO (YYYY-MM-DD، مستخدمة داخلياً للـ API وحقول
+            // الإدخال) إلى صيغة عرض DD-MM-YYYY للمستخدم. تنسيق صريح بدل الاعتماد
+            // على إعادة ترتيب المتصفح البصري تلقائياً (bidi) لنص RTL/LTR مختلط،
+            // لضمان ظهور التاريخ بنفس الترتيب الصحيح دوماً - على الشاشة وفي أي
+            // تقرير مُلصَق لاحقاً في واتساب أو الإيميل.
+            function formatDisplayDate(iso) {
+                if (!iso || iso.indexOf('-') === -1) return iso;
+                const parts = iso.split('-');
+                if (parts.length !== 3) return iso;
+                const [y, m, d] = parts;
+                return `${d}-${m}-${y}`;
+            }
+
             function computePresetRange(preset) {
                 const today = new Date();
                 if (preset === 'today') {
@@ -1349,20 +1562,27 @@ async def serve_index(request: Request):
                     const f = new Date(today.getFullYear(), today.getMonth(), 1);
                     return { from: toIsoDate(f), to: toIsoDate(today) };
                 }
+                if (preset === 'lastmonth') {
+                    const f = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                    const t = new Date(today.getFullYear(), today.getMonth(), 0); // اليوم الأخير من الشهر الماضي
+                    return { from: toIsoDate(f), to: toIsoDate(t) };
+                }
                 return null;
             }
 
             function buildRangeLabel(preset, dateFrom, dateTo) {
                 const presetNames = {
                     today: 'اليوم', yesterday: 'أمس', last7: 'آخر 7 أيام',
-                    last14: 'آخر 14 يوماً', thismonth: 'هذا الشهر'
+                    last14: 'آخر 14 يوماً', thismonth: 'هذا الشهر', lastmonth: 'الشهر الماضي'
                 };
+                const fFrom = formatDisplayDate(dateFrom);
+                const fTo = formatDisplayDate(dateTo);
                 if (preset && presetNames[preset]) {
-                    if (dateFrom === dateTo) return `${presetNames[preset]} (${dateFrom})`;
-                    return `${presetNames[preset]} (${dateFrom} → ${dateTo})`;
+                    if (dateFrom === dateTo) return `${presetNames[preset]} (${fFrom})`;
+                    return `${presetNames[preset]} (${fFrom} ← ${fTo})`;
                 }
-                if (dateFrom === dateTo) return dateFrom;
-                return `من ${dateFrom} إلى ${dateTo}`;
+                if (dateFrom === dateTo) return fFrom;
+                return `من ${fFrom} إلى ${fTo}`;
             }
 
             function setLoadingState(loading) {
@@ -1375,7 +1595,7 @@ async def serve_index(request: Request):
 
             const PRESET_LABELS = {
                 today: 'اليوم', yesterday: 'أمس', last7: 'آخر 7 أيام',
-                last14: 'آخر 14 يوماً', thismonth: 'هذا الشهر', custom: 'نطاق مخصص'
+                last14: 'آخر 14 يوماً', thismonth: 'هذا الشهر', lastmonth: 'الشهر الماضي', custom: 'نطاق مخصص'
             };
 
             // يزامن كل عناصر واجهة فلتر التاريخ (الشريط العلوي + القائمة المنسدلة
@@ -1774,6 +1994,135 @@ async def serve_index(request: Request):
                 const rows = getExplorerRows();
                 explorerState.level = prevLevel;
                 return rows.length;
+            }
+
+            // يبني شجرة هرمية للتقرير القابل للنسخ، بناءً على التبويب النشط حالياً:
+            // - الحملات: كل حملة معروضة + كل مجموعاتها + كل إعلانات كل مجموعة
+            // - المجموعات: كل مجموعة معروضة + كل إعلاناتها
+            // - الإعلانات: قائمة الإعلانات المعروضة فقط (بلا تفريع)
+            // يعتمد على getExplorerRows() نفسها المستخدمة في رسم الجدول، فتبقى
+            // نتيجة النسخ مطابقة تماماً لما يراه المستخدم فعلياً على الشاشة
+            // (بعد البحث والفرز والفلاتر النشطة)، ثم يُوسَّع للمستويات الأعمق.
+            function buildTreeForReport() {
+                const cfg = platformCfg(explorerState.platform);
+                const fullList = scopedList(globalData[cfg.dataKey]);
+
+                let baseList = fullList;
+                if (explorerState.selectedCampaign) {
+                    baseList = baseList.filter(i => campaignOf(i) === explorerState.selectedCampaign);
+                }
+                if (explorerState.level === 'ads' && explorerState.selectedGroup) {
+                    baseList = baseList.filter(i => groupOf(i) === explorerState.selectedGroup);
+                }
+
+                const displayedRows = getExplorerRows();
+
+                if (explorerState.level === 'ads') {
+                    return { level: 'ads', items: displayedRows };
+                }
+
+                if (explorerState.level === 'adsets') {
+                    const items = displayedRows.map(adsetRow => {
+                        const adsScoped = baseList.filter(i => groupOf(i) === adsetRow.name);
+                        const ads = aggregateRows(adsScoped, adOf, cfg, 'ads');
+                        return Object.assign({}, adsetRow, { ads });
+                    });
+                    return { level: 'adsets', items };
+                }
+
+                const items = displayedRows.map(campaignRow => {
+                    const groupScoped = baseList.filter(i => campaignOf(i) === campaignRow.name);
+                    const adsetRows = aggregateRows(groupScoped, groupOf, cfg, 'adsets');
+                    const adsets = adsetRows.map(adsetRow => {
+                        const adsScoped = groupScoped.filter(i => groupOf(i) === adsetRow.name);
+                        const ads = aggregateRows(adsScoped, adOf, cfg, 'ads');
+                        return Object.assign({}, adsetRow, { ads });
+                    });
+                    return Object.assign({}, campaignRow, { adsets });
+                });
+                return { level: 'campaigns', items };
+            }
+
+            // يصيغ سطر مؤشرات موحّد لعنصر واحد (حملة/مجموعة/إعلان) بمسافة بادئة قابلة للتحكم
+            function formatMetricsLine(r, cfg, indent) {
+                const cpaText = r.cpa !== null ? fmt(r.cpa) + ' ر.س' : '--';
+                return `${indent}   💰 ${fmt(r.spend)} ر.س  |  👁️ ${r.impressions.toLocaleString('en-US')}  |  🖱️ ${r.clicks.toLocaleString('en-US')}  |  📈 CTR ${r.ctr.toFixed(1)}%\\n` +
+                       `${indent}   🎯 ${cfg.resultLabel}: ${r.conv.toLocaleString('en-US')} (${cfg.resultSub})  |  💵 تكلفة/نتيجة: ${cpaText}`;
+            }
+
+            function buildTableReportText() {
+                const cfg = platformCfg(explorerState.platform);
+                const tree = buildTreeForReport();
+                const rangeLabel = buildRangeLabel(dateRangeState.preset, dateRangeState.date_from, dateRangeState.date_to);
+                const nowStr = new Date().toLocaleTimeString('en-US');
+                const levelTitles = { campaigns: 'الحملات الإعلانية', adsets: 'المجموعات الإعلانية', ads: 'الإعلانات' };
+
+                let lines = [];
+                lines.push(`📊 *تقرير ${levelTitles[tree.level]} - ${cfg.label} - elevenz*`);
+                lines.push(`🗓️ الفترة: ${rangeLabel}`);
+                lines.push(`⏱️ وقت الإنشاء: ${nowStr}`);
+                if (explorerState.selectedCampaign) lines.push(`📂 الحملة: ${explorerState.selectedCampaign}`);
+                if (explorerState.selectedGroup) lines.push(`📁 المجموعة: ${explorerState.selectedGroup}`);
+                lines.push('');
+
+                if (tree.items.length === 0) {
+                    lines.push('لا توجد بيانات مطابقة لهذه الفترة أو الفلتر الحالي.');
+                    return lines.join('\\n');
+                }
+
+                if (tree.level === 'ads') {
+                    tree.items.forEach(ad => {
+                        const statusEmoji = ad.isActive ? '🟢' : '⚪';
+                        lines.push(`📢 ${statusEmoji} *${ad.name}*`);
+                        lines.push(formatMetricsLine(ad, cfg, ''));
+                        lines.push('');
+                    });
+                } else if (tree.level === 'adsets') {
+                    tree.items.forEach(adset => {
+                        const statusEmoji = adset.isActive ? '🟢' : '⚪';
+                        lines.push(`📁 ${statusEmoji} *${adset.name}*`);
+                        lines.push(formatMetricsLine(adset, cfg, ''));
+                        if (adset.ads.length > 0) {
+                            lines.push(`   📢 الإعلانات (${adset.ads.length}):`);
+                            adset.ads.forEach(ad => {
+                                const adEmoji = ad.isActive ? '🟢' : '⚪';
+                                lines.push(`      - ${adEmoji} *${ad.name}*`);
+                                lines.push(formatMetricsLine(ad, cfg, '      '));
+                            });
+                        }
+                        lines.push('');
+                    });
+                } else {
+                    tree.items.forEach(camp => {
+                        const statusEmoji = camp.isActive ? '🟢' : '⚪';
+                        lines.push(`📂 ${statusEmoji} *${camp.name}*`);
+                        lines.push(formatMetricsLine(camp, cfg, ''));
+                        camp.adsets.forEach(adset => {
+                            const adsetEmoji = adset.isActive ? '🟢' : '⚪';
+                            lines.push(`   📁 ${adsetEmoji} *${adset.name}*`);
+                            lines.push(formatMetricsLine(adset, cfg, '   '));
+                            adset.ads.forEach(ad => {
+                                const adEmoji = ad.isActive ? '🟢' : '⚪';
+                                lines.push(`      📢 ${adEmoji} *${ad.name}*`);
+                                lines.push(formatMetricsLine(ad, cfg, '      '));
+                            });
+                        });
+                        lines.push('');
+                    });
+                }
+
+                lines.push('_تم إنشاء هذا التقرير تلقائياً عبر منصة elevenz_');
+                return lines.join('\\n');
+            }
+
+            function copyTableReport() {
+                const text = buildTableReportText();
+                const finish = () => showToast('تم نسخ التقرير بنجاح! 📋');
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
+                } else {
+                    fallbackCopy(text, finish);
+                }
             }
 
             function renderExplorer() {
