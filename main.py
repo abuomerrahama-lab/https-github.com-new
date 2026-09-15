@@ -839,7 +839,7 @@ async def serve_index(request: Request):
             .top-bar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; gap: 16px; flex-wrap: wrap; }
             .header-title h1 { margin: 0; font-size: 23px; font-weight: 800; color: var(--text-dark); }
             .header-title p { margin: 6px 0 0 0; color: var(--text-muted); font-size: 13px; font-weight: 500; }
-            .top-actions { display: flex; gap: 10px; }
+            .top-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
             .btn {
                 display: inline-flex;
@@ -1223,9 +1223,12 @@ async def serve_index(request: Request):
                     <p id="update-time">تتبع مباشر للأداء والمؤشرات | آخر تحديث: --</p>
                 </div>
                 <div class="top-actions">
-                    <button class="btn btn-copy" onclick="copyReport()">
+                    <button class="btn btn-copy" onclick="copyReportPlain()">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="3"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                        نسخ التقرير
+                        نسخ
+                    </button>
+                    <button class="btn btn-copy" onclick="copyReportForAnalysis()">
+                        🤖 نسخ للتحليل
                     </button>
                     <button class="btn btn-refresh" onclick="refreshData()">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
@@ -1336,6 +1339,23 @@ async def serve_index(request: Request):
                 </div>
             </div>
 
+            <div class="chart-section" id="daily-trend-section" style="margin-bottom:22px;">
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+                    <div>
+                        <div class="chart-section-title" style="margin-bottom:4px;">الأداء اليومي خلال الفترة</div>
+                        <div class="chart-section-sub">كيف يقارن كل يوم باليوم الذي قبله - لكل منصة على حدة</div>
+                    </div>
+                    <div class="time-selector" style="margin-bottom:0;">
+                        <button class="time-btn active" data-metric="spend" onclick="setDailyMetric('spend', this)">الإنفاق</button>
+                        <button class="time-btn" data-metric="conv" onclick="setDailyMetric('conv', this)">النتائج</button>
+                    </div>
+                </div>
+                <div class="chart-wrapper" id="daily-trend-wrapper">
+                    <canvas id="dailyTrendChart"></canvas>
+                </div>
+                <div class="empty-state" id="daily-trend-empty" style="display:none;">اختر فترة أطول من يوم واحد لعرض الاتجاه اليومي</div>
+            </div>
+
             <div class="explorer-card">
                 <div class="explorer-sticky-zone">
                     <div class="explorer-top">
@@ -1371,10 +1391,16 @@ async def serve_index(request: Request):
                     <div class="filter-chips" id="filter-chips"></div>
                     <div class="table-toolbar">
                         <input type="text" class="search-input" id="search-input" placeholder="ابحث عن حملة أو مجموعة أو إعلان" oninput="onSearch(this.value)">
-                        <button class="toolbar-btn" onclick="notImplementedYet()">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18"></rect><rect x="14" y="3" width="7" height="10"></rect></svg>
-                            الأعمدة
-                        </button>
+                        <div class="date-filter-dropdown" id="columns-dropdown">
+                            <button class="toolbar-btn" onclick="toggleColumnsDropdown(event)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18"></rect><rect x="14" y="3" width="7" height="10"></rect></svg>
+                                الأعمدة
+                                <svg class="chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                            </button>
+                            <div class="date-filter-panel" style="width:230px;">
+                                <div class="date-filter-presets" id="columns-checklist"></div>
+                            </div>
+                        </div>
                         <button class="toolbar-btn" onclick="notImplementedYet()">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15V6M18.5 18a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM12 12H3M16 6H3M12 18H3"></path></svg>
                             التجميع
@@ -1411,6 +1437,14 @@ async def serve_index(request: Request):
             let globalData = {};
             let lastMetrics = null;
             let previousMetrics = null;
+            let previousRawData = null;
+            // حالة إظهار/إخفاء أعمدة الجدول - عمودا المقارنة الجديدان مفعَّلان
+            // افتراضياً لأن هذا بالضبط ما طُلب "تفعيله"، وبقية الأعمدة قياسية.
+            let columnVisibility = {
+                status: true, results: true, cpa: true, spend: true,
+                impressions: true, clicks: true, ctr: true,
+                compareSpend: true, compareConv: true
+            };
             let previousRangeInfo = null;
             let isLoadingData = false;
 
@@ -1673,6 +1707,7 @@ async def serve_index(request: Request):
             function toggleDateDropdown(evt) {
                 if (evt) evt.stopPropagation();
                 document.getElementById('custom-range-box').style.display = 'none';
+                closeColumnsDropdown();
                 const dd = document.getElementById('date-filter-dropdown');
                 const opening = !dd.classList.contains('open');
                 dd.classList.toggle('open', opening);
@@ -1689,10 +1724,58 @@ async def serve_index(request: Request):
                 if (dd) dd.classList.remove('open');
             }
 
+            // ===== منتقي الأعمدة (Columns picker) =====
+            const COLUMN_DEFS = [
+                { key: 'status', label: 'حالة العرض' },
+                { key: 'results', label: 'النتائج' },
+                { key: 'compareConv', label: 'مقارنة النتائج بالفترة السابقة' },
+                { key: 'cpa', label: 'التكلفة لكل نتيجة' },
+                { key: 'spend', label: 'المبلغ الذي تم إنفاقه' },
+                { key: 'compareSpend', label: 'مقارنة الإنفاق بالفترة السابقة' },
+                { key: 'impressions', label: 'الظهور' },
+                { key: 'clicks', label: 'النقرات' },
+                { key: 'ctr', label: 'CTR' }
+            ];
+
+            function renderColumnsChecklist() {
+                const el = document.getElementById('columns-checklist');
+                if (!el) return;
+                el.innerHTML = COLUMN_DEFS.map(c => `
+                    <label style="display:flex; align-items:center; gap:8px; padding:7px 4px; font-size:12.5px; font-weight:600; color:var(--text-dark); cursor:pointer;">
+                        <input type="checkbox" ${columnVisibility[c.key] ? 'checked' : ''} onchange="toggleColumnVisibility('${c.key}', this.checked)">
+                        ${c.label}
+                    </label>
+                `).join('');
+            }
+
+            function toggleColumnVisibility(key, checked) {
+                columnVisibility[key] = checked;
+                renderTableHead();
+                renderTableBody();
+            }
+
+            function toggleColumnsDropdown(evt) {
+                if (evt) evt.stopPropagation();
+                closeDateDropdown();
+                const dd = document.getElementById('columns-dropdown');
+                const opening = !dd.classList.contains('open');
+                dd.classList.toggle('open', opening);
+                if (opening) renderColumnsChecklist();
+            }
+
+            function closeColumnsDropdown() {
+                const dd = document.getElementById('columns-dropdown');
+                if (dd) dd.classList.remove('open');
+            }
+
             document.addEventListener('click', (e) => {
                 const dd = document.getElementById('date-filter-dropdown');
                 if (dd && dd.classList.contains('open') && !dd.contains(e.target)) {
                     dd.classList.remove('open');
+                }
+                const cdd = document.getElementById('columns-dropdown');
+                if (cdd && cdd.classList.contains('open') && !cdd.contains(e.target)) {
+                    cdd.classList.remove('open');
                 }
             });
 
@@ -1850,6 +1933,101 @@ async def serve_index(request: Request):
                 }
             }
 
+            // يجمّع بيانات المنصات الثلاث (المحمَّلة أصلاً في الذاكرة - بلا أي طلب
+            // إضافي للخادم) حسب التاريخ، بدل حسب الحملة/المجموعة، لبناء اتجاه يومي.
+            // كل صف في البيانات الخام يحمل حقل "date" أصلاً (نفس الحقل المستخدم في
+            // فلترة/تجميع الجدول)، فهذا تجميع بديل بمفتاح مختلف فقط.
+            function computeDailyBreakdown() {
+                const byDate = {};
+                const addRows = (list, platformKey) => {
+                    scopedList(list).forEach(i => {
+                        const d = i.date;
+                        if (!d) return;
+                        if (!byDate[d]) byDate[d] = { date: d, metaSpend: 0, tiktokSpend: 0, googleSpend: 0, metaConv: 0, tiktokConv: 0, googleConv: 0 };
+                        const spend = safeNum(i.spend || i.cost);
+                        if (platformKey === 'meta') {
+                            byDate[d].metaSpend += spend;
+                            byDate[d].metaConv += parseMetaConversions(i);
+                        } else if (platformKey === 'tiktok') {
+                            byDate[d].tiktokSpend += spend;
+                            byDate[d].tiktokConv += safeNum(i.conversions || i.conversion || i.results);
+                        } else {
+                            byDate[d].googleSpend += spend;
+                            byDate[d].googleConv += parseGoogleConversions(i);
+                        }
+                    });
+                };
+                addRows(globalData.meta_ads, 'meta');
+                addRows(globalData.tiktok_ads, 'tiktok');
+                addRows(globalData.google_ads, 'google');
+
+                return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
+            }
+
+            let dailyTrendChartInstance = null;
+            let dailyTrendMetric = 'spend';
+
+            function setDailyMetric(metric, btn) {
+                dailyTrendMetric = metric;
+                document.querySelectorAll('#daily-trend-section .time-btn').forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+                renderDailyTrendChart();
+            }
+
+            function renderDailyTrendChart() {
+                const days = computeDailyBreakdown();
+                const wrapper = document.getElementById('daily-trend-wrapper');
+                const empty = document.getElementById('daily-trend-empty');
+
+                if (days.length < 2) {
+                    wrapper.style.display = 'none';
+                    empty.style.display = 'block';
+                    return;
+                }
+                wrapper.style.display = 'block';
+                empty.style.display = 'none';
+
+                const labels = days.map(d => formatDisplayDate(d.date));
+                const key = dailyTrendMetric === 'spend'
+                    ? { meta: 'metaSpend', tiktok: 'tiktokSpend', google: 'googleSpend', fmt: (v) => v.toFixed(2) + ' ر.س' }
+                    : { meta: 'metaConv', tiktok: 'tiktokConv', google: 'googleConv', fmt: (v) => v.toLocaleString('en-US') };
+
+                const ctx = document.getElementById('dailyTrendChart').getContext('2d');
+                if (dailyTrendChartInstance) dailyTrendChartInstance.destroy();
+
+                dailyTrendChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            { label: 'Meta Ads', data: days.map(d => d[key.meta]), borderColor: '#0284c7', backgroundColor: '#0284c7', tension: 0.3, pointRadius: 3 },
+                            { label: 'TikTok Ads', data: days.map(d => d[key.tiktok]), borderColor: '#f05a28', backgroundColor: '#f05a28', tension: 0.3, pointRadius: 3 },
+                            { label: 'Google Ads', data: days.map(d => d[key.google]), borderColor: '#0f2540', backgroundColor: '#0f2540', tension: 0.3, pointRadius: 3 }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'top', labels: { font: { family: 'Cairo', weight: '600' }, boxWidth: 10, usePointStyle: true } },
+                            datalabels: { display: false },
+                            tooltip: {
+                                backgroundColor: '#0f2540',
+                                titleFont: { family: 'Cairo', weight: '700' },
+                                bodyFont: { family: 'Cairo' },
+                                padding: 10,
+                                cornerRadius: 8,
+                                callbacks: { label: (c) => `${c.dataset.label}: ${key.fmt(c.parsed.y)}` }
+                            }
+                        },
+                        scales: {
+                            y: { grid: { color: '#eef1f6' }, ticks: { font: { family: 'Cairo' } }, beginAtZero: true },
+                            x: { grid: { display: false }, ticks: { font: { family: 'Cairo', weight: '600' } } }
+                        }
+                    }
+                });
+            }
+
             // يحسب كل مؤشرات الأداء المجمّعة (إنفاق/نتائج/CTR/CPA) من بيانات فترة
             // واحدة {meta_ads, tiktok_ads, google_ads}. دالة نقية بلا أي لمس لـ DOM،
             // تُستخدم مرتين: مرة للفترة الحالية المعروضة، ومرة للفترة السابقة عند
@@ -1931,6 +2109,7 @@ async def serve_index(request: Request):
 
                 updateChart(cur.metaSpend, cur.tiktokSpend, cur.googleSpend);
                 updateDonut(cur.metaConv, cur.tiktokConv, cur.googleConv);
+                renderDailyTrendChart();
                 renderExplorer();
 
                 lastMetrics = {
@@ -2001,6 +2180,7 @@ async def serve_index(request: Request):
 
                     const prev = computeAggregateMetrics(json.data || {});
                     previousMetrics = prev;
+                    previousRawData = json.data || {}; // للمقارنة على مستوى الصف الواحد في الجدول
 
                     document.getElementById('total-compare').innerHTML =
                         buildComparePillHtml(currentMetrics.totalSpend, prev.totalSpend, { goodDirection: 'neutral' });
@@ -2010,6 +2190,10 @@ async def serve_index(request: Request):
                         buildComparePillHtml(currentMetrics.tiktokSpend, prev.tiktokSpend, { goodDirection: 'neutral' });
                     document.getElementById('google-compare').innerHTML =
                         buildComparePillHtml(currentMetrics.googleSpend, prev.googleSpend, { goodDirection: 'neutral' });
+
+                    // أعد رسم الجدول الآن بعد وصول بيانات المقارنة، حتى تظهر أعمدة
+                    // "مقارنة الإنفاق/النتائج" إن كانت مُفعَّلة في منتقي الأعمدة
+                    renderExplorer();
                 } catch (e) {
                     console.error('Error fetching comparison period:', e);
                 }
@@ -2071,6 +2255,41 @@ async def serve_index(request: Request):
                 });
             }
 
+            // يطابق كل صف حالي بنظيره في الفترة السابقة (بنفس النطاق والمستوى
+            // والاسم بالضبط) لحساب نسبة تغيّر الإنفاق والنتائج. عنصر غير موجود
+            // في الفترة السابقة (جديد) يُترك بلا نسبة (null) بدل قيمة مضلِّلة.
+            function attachComparisonData(rows) {
+                if (!previousRawData) {
+                    rows.forEach(r => { r.spendChangePct = null; r.convChangePct = null; });
+                    return rows;
+                }
+                const cfg = platformCfg(explorerState.platform);
+                let scoped = scopedList(previousRawData[cfg.dataKey]);
+                if (explorerState.selectedCampaign) scoped = scoped.filter(i => campaignOf(i) === explorerState.selectedCampaign);
+                if (explorerState.level === 'ads' && explorerState.selectedGroup) scoped = scoped.filter(i => groupOf(i) === explorerState.selectedGroup);
+
+                let keyFn = campaignOf;
+                if (explorerState.level === 'adsets') keyFn = groupOf;
+                else if (explorerState.level === 'ads') keyFn = adOf;
+
+                const prevRows = aggregateRows(scoped, keyFn, cfg, explorerState.level);
+                const prevByName = {};
+                prevRows.forEach(r => { prevByName[r.name] = r; });
+
+                const pctChange = (cur, prev) => {
+                    if (prev === null || prev === undefined) return null;
+                    if (prev === 0) return cur === 0 ? null : Infinity;
+                    return ((cur - prev) / prev) * 100;
+                };
+
+                rows.forEach(r => {
+                    const prev = prevByName[r.name];
+                    r.spendChangePct = prev ? pctChange(r.spend, prev.spend) : null;
+                    r.convChangePct = prev ? pctChange(r.conv, prev.conv) : null;
+                });
+                return rows;
+            }
+
             function getExplorerRows() {
                 const cfg = platformCfg(explorerState.platform);
                 const fullList = scopedList(globalData[cfg.dataKey]);
@@ -2104,7 +2323,7 @@ async def serve_index(request: Request):
                     return (av - bv) * explorerState.sortDir;
                 });
 
-                return rows;
+                return attachComparisonData(rows);
             }
 
             function levelCount(levelKey) {
@@ -2288,25 +2507,54 @@ async def serve_index(request: Request):
                 return explorerState.sortDir === 1 ? '↑' : '↓';
             }
 
-            function renderTableHead() {
+            // يبني قائمة الأعمدة المرئية حالياً (ثابتة الترتيب) بحسب columnVisibility
+            // - تُستخدم من renderTableHead وrenderTableBody معاً، فيستحيل أن يختلف
+            // عدد أعمدة الرأس عن عدد أعمدة الصفوف.
+            function getVisibleColumnDefs() {
                 const cfg = platformCfg(explorerState.platform);
+                return [
+                    { key: 'toggle', label: '', sortable: false, always: true },
+                    { key: 'name', sortKey: 'name', label: 'الاسم', sortable: true, always: true },
+                    { key: 'status', sortKey: 'isActive', label: 'حالة العرض', sortable: true, on: columnVisibility.status },
+                    { key: 'conv', sortKey: 'conv', label: cfg.resultLabel, sortable: true, on: columnVisibility.results },
+                    { key: 'compareConv', label: 'مقارنة النتائج', sortable: false, on: columnVisibility.compareConv },
+                    { key: 'cpa', sortKey: 'cpa', label: 'التكلفة لكل نتيجة', sortable: true, on: columnVisibility.cpa },
+                    { key: 'spend', sortKey: 'spend', label: 'المبلغ الذي تم إنفاقه', sortable: true, on: columnVisibility.spend },
+                    { key: 'compareSpend', label: 'مقارنة الإنفاق', sortable: false, on: columnVisibility.compareSpend },
+                    { key: 'impressions', sortKey: 'impressions', label: 'الظهور', sortable: true, on: columnVisibility.impressions },
+                    { key: 'clicks', sortKey: 'clicks', label: 'النقرات', sortable: true, on: columnVisibility.clicks },
+                    { key: 'ctr', sortKey: 'ctr', label: 'CTR', sortable: true, on: columnVisibility.ctr }
+                ].filter(c => c.always || c.on);
+            }
+
+            function renderTableHead() {
                 const head = document.getElementById('table-head');
-                const cols = [
-                    { key: null, label: '', sortable: false },
-                    { key: 'name', label: 'الاسم', sortable: true },
-                    { key: 'isActive', label: 'حالة العرض', sortable: true },
-                    { key: 'conv', label: cfg.resultLabel, sortable: true },
-                    { key: 'cpa', label: 'التكلفة لكل نتيجة', sortable: true },
-                    { key: 'spend', label: 'المبلغ الذي تم إنفاقه', sortable: true },
-                    { key: 'impressions', label: 'الظهور', sortable: true },
-                    { key: 'clicks', label: 'النقرات', sortable: true },
-                    { key: 'ctr', label: 'CTR', sortable: true }
-                ];
+                const cols = getVisibleColumnDefs();
                 head.innerHTML = cols.map(c => {
                     if (!c.sortable) return `<th class="no-sort">${c.label}</th>`;
-                    const sorted = explorerState.sortKey === c.key ? 'sorted' : '';
-                    return `<th class="${sorted}" onclick="sortBy('${c.key}')">${c.label} <span class="sort-ico">${sortIco(c.key)}</span></th>`;
+                    const sorted = explorerState.sortKey === c.sortKey ? 'sorted' : '';
+                    return `<th class="${sorted}" onclick="sortBy('${c.sortKey}')">${c.label} <span class="sort-ico">${sortIco(c.sortKey)}</span></th>`;
                 }).join('');
+            }
+
+            // يبني خلية <td> واحدة لعمود مقارنة (إنفاق أو نتائج) بحسب نسبة التغيّر
+            // المحسوبة مسبقاً في attachComparisonData. عنصر جديد كلياً (غير موجود
+            // بالفترة السابقة) يُميَّز بشارة "جديد"، وعنصر بلا بيانات مقارنة (فترة
+            // سابقة لم تصل بعد) يُعرض بـ "--" بدل رقم مضلِّل.
+            function compareCellHtml(changePct, mode) {
+                if (changePct === null || changePct === undefined) {
+                    return `<td><span style="color:var(--text-faint); font-size:12px;">--</span></td>`;
+                }
+                if (changePct === Infinity) {
+                    return `<td><span class="compare-pill up" style="font-size:11px;">جديد ✨</span></td>`;
+                }
+                if (Math.abs(changePct) < 0.1) {
+                    return `<td><span class="compare-pill flat" style="font-size:11px;">~ 0.0%</span></td>`;
+                }
+                const isIncrease = changePct >= 0;
+                const arrow = isIncrease ? '▲' : '▼';
+                const cls = mode === 'neutral' ? 'flat' : (isIncrease ? 'up' : 'down');
+                return `<td><span class="compare-pill ${cls}" style="font-size:11px;">${arrow} ${Math.abs(changePct).toFixed(1)}%</span></td>`;
             }
 
             function renderTableBody() {
@@ -2314,9 +2562,10 @@ async def serve_index(request: Request):
                 const rows = getExplorerRows();
                 const body = document.getElementById('table-body');
                 const isLeaf = explorerState.level === 'ads';
+                const cols = getVisibleColumnDefs();
 
                 if (rows.length === 0) {
-                    body.innerHTML = `<tr><td colspan="9"><div class="empty-state">لا توجد بيانات مطابقة لهذه الفترة أو الفلتر الحالي</div></td></tr>`;
+                    body.innerHTML = `<tr><td colspan="${cols.length}"><div class="empty-state">لا توجد بيانات مطابقة لهذه الفترة أو الفلتر الحالي</div></td></tr>`;
                     return;
                 }
 
@@ -2332,38 +2581,40 @@ async def serve_index(request: Request):
                         : 'حالة تقديرية (لا حقل حالة فعلي من المنصة لهذا العنصر) بناءً على الإنفاق خلال الفترة';
                     const statusSuffix = r.statusIsReal ? '' : ' *';
 
-                    return `
-                        <tr class="${rowClass}" ${drillAttr}>
-                            <td>
+                    const cellHtml = {
+                        toggle: `<td>
                                 <label class="toggle-switch" title="${statusTitle}">
                                     <input type="checkbox" ${r.isActive ? 'checked' : ''} disabled>
                                     <span class="toggle-slider"></span>
                                 </label>
-                            </td>
-                            <td>
+                            </td>`,
+                        name: `<td>
                                 <div class="name-cell">
                                     <span class="name-icon">${icon}</span>
                                     <span>${escapeHtml(r.name)}</span>
                                     ${badge}
                                     ${!isLeaf ? '<span class="drill-arrow">‹</span>' : ''}
                                 </div>
-                            </td>
-                            <td>
+                            </td>`,
+                        status: `<td>
                                 <span class="status-pill ${r.isActive ? 'status-active' : 'status-paused'}" title="${statusTitle}">
                                     <span class="status-dot"></span>${r.isActive ? 'نشطة' : 'متوقفة'}${statusSuffix}
                                 </span>
-                            </td>
-                            <td>
+                            </td>`,
+                        conv: `<td>
                                 <div class="metric-main">${r.conv.toLocaleString('en-US')}</div>
                                 <div class="metric-sub">${cfg.resultSub}</div>
-                            </td>
-                            <td>${cpaText}</td>
-                            <td>${r.spend.toFixed(2)} ر.س</td>
-                            <td>${r.impressions.toLocaleString('en-US')}</td>
-                            <td>${r.clicks.toLocaleString('en-US')}</td>
-                            <td>${r.ctr.toFixed(1)}%</td>
-                        </tr>
-                    `;
+                            </td>`,
+                        compareConv: compareCellHtml(r.convChangePct, 'good'),
+                        cpa: `<td>${cpaText}</td>`,
+                        spend: `<td>${r.spend.toFixed(2)} ر.س</td>`,
+                        compareSpend: compareCellHtml(r.spendChangePct, 'neutral'),
+                        impressions: `<td>${r.impressions.toLocaleString('en-US')}</td>`,
+                        clicks: `<td>${r.clicks.toLocaleString('en-US')}</td>`,
+                        ctr: `<td>${r.ctr.toFixed(1)}%</td>`
+                    };
+
+                    return `<tr class="${rowClass}" ${drillAttr}>${cols.map(c => cellHtml[c.key]).join('')}</tr>`;
                 }).join('');
             }
 
@@ -2472,8 +2723,10 @@ async def serve_index(request: Request):
 
             function fmt(n) { return (Math.round(n * 100) / 100).toLocaleString('en-US'); }
 
-            function copyReport() {
-                if (!lastMetrics) return;
+            // يبني كتلة الأرقام المشتركة (الفترة + الإجماليات + تفاصيل كل منصة مع
+            // مقارنة الفترة السابقة إن توفّرت) - مستخدَمة في كلا زري النسخ، بحيث
+            // يبقى الفرق بينهما في "الإطار" فقط (تعليمات AI أو بدونها) لا في الأرقام.
+            function buildReportDataBlock() {
                 const m = lastMetrics;
                 const p = previousMetrics; // قد تكون لا تزال قيد التحميل (null) عند نقرة سريعة - نتعامل مع ذلك بأمان
 
@@ -2510,11 +2763,8 @@ async def serve_index(request: Request):
                 const prevLine = (label, cur, prev) =>
                     p ? `   (الفترة السابقة → ${label}: ${prev})` : '';
 
-                const text =
-`أنت خبير تسويق رقمي ومحلل أداء إعلانات محترف (Performance Marketing Specialist).
-حلّل بيانات أداء الحملات الإعلانية التالية وقدّم رؤى وتوصيات عملية:
-
-${comparisonHeader}⏱️ وقت إنشاء التقرير: ${m.nowStr}
+                return (
+`${comparisonHeader}⏱️ وقت إنشاء التقرير: ${m.nowStr}
 
 📊 *الأرقام الإجمالية*
 💰 الإنفاق الكلي: ${fmt(m.totalSpend)} ر.س${totalSpendChange}${p ? `\\n${prevLine('الإنفاق', m.totalSpend, fmt(p.totalSpend) + ' ر.س')}` : ''}
@@ -2539,7 +2789,42 @@ ${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.tiktokSpend)} 
 • الإحالات: ${m.googleConv.toLocaleString('en-US')}${googleConvChange}
 • CTR: ${m.googleCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.googleCpa !== null ? fmt(m.googleCpa) + ' ر.س' : '--'}
-${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.googleSpend)} ر.س | الإحالات: ${p.googleConv.toLocaleString('en-US')} | CTR: ${p.googleCtr.toFixed(1)}% | تكلفة/نتيجة: ${p.googleCpa !== null ? fmt(p.googleCpa) + ' ر.س' : '--'})` : ''}
+${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.googleSpend)} ر.س | الإحالات: ${p.googleConv.toLocaleString('en-US')} | CTR: ${p.googleCtr.toFixed(1)}% | تكلفة/نتيجة: ${p.googleCpa !== null ? fmt(p.googleCpa) + ' ر.س' : '--'})` : ''}`
+                );
+            }
+
+            function doCopyText(text, toastMsg) {
+                const finish = () => showToast(toastMsg);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
+                } else {
+                    fallbackCopy(text, finish);
+                }
+            }
+
+            // زر "نسخ": ملخص نظيف بلا أي إطار أو تعليمات - جاهز للمشاركة المباشرة
+            // (واتساب، إيميل، أو لصقه لمديرك) دون أي نص إضافي غير مرغوب.
+            function copyReportPlain() {
+                if (!lastMetrics) return;
+                const text =
+`📊 *تقرير أداء الإعلانات - elevenz*
+${buildReportDataBlock()}
+
+_تم إنشاء هذا التقرير تلقائياً عبر منصة elevenz_`;
+                doCopyText(text, 'تم نسخ التقرير بنجاح! 📋');
+            }
+
+            // زر "نسخ للتحليل": نفس الأرقام بالضبط، لكن ضمن Prompt جاهز يوجّه أي
+            // نموذج ذكاء اصطناعي (Claude/ChatGPT) لتحليلها وإعطاء توصيات فوراً
+            // بمجرد اللصق - دون أن يحتاج المستخدم كتابة أي طلب إضافي بنفسه.
+            function copyReportForAnalysis() {
+                if (!lastMetrics) return;
+                const p = previousMetrics;
+                const text =
+`أنت خبير تسويق رقمي ومحلل أداء إعلانات محترف (Performance Marketing Specialist).
+حلّل بيانات أداء الحملات الإعلانية التالية وقدّم رؤى وتوصيات عملية:
+
+${buildReportDataBlock()}
 
 ---
 🎯 *المطلوب منك في 4 نقاط سريعة ومباشرة:*
@@ -2549,16 +2834,7 @@ ${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.googleSpend)} 
 4. 3 توصيات عملية فورية لتعديل الميزانيات أو الإعلانات وتحسين التكلفة لكل نتيجة.
 
 _تم إنشاء هذا التقرير تلقائياً عبر منصة elevenz_`;
-
-                const finish = () => showToast(
-                    p ? 'تم نسخ التقرير التحليلي! الصقه في أي ذكاء اصطناعي لتحليل فوري 🤖' : 'تم نسخ التقرير بنجاح! 📋'
-                );
-
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
-                } else {
-                    fallbackCopy(text, finish);
-                }
+                doCopyText(text, 'تم نسخ التقرير التحليلي! الصقه في أي ذكاء اصطناعي لتحليل فوري 🤖');
             }
 
             function fallbackCopy(text, cb) {
