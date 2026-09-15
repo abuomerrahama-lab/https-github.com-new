@@ -947,6 +947,15 @@ async def serve_index(request: Request):
             .card-value { font-size: 27px; font-weight: 800; color: var(--text-dark); margin-bottom: 6px; letter-spacing: -0.5px; }
             .card-sub { font-size: 12.5px; font-weight: 700; }
             .card-meta { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color); display: flex; gap: 14px; font-size: 11.5px; color: var(--text-muted); font-weight: 600; }
+            .card-compare { margin-top: 8px; min-height: 20px; }
+            .compare-pill {
+                display: inline-flex; align-items: center; gap: 4px;
+                padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 800;
+            }
+            .compare-pill.up { background: var(--stage-green-bg); color: var(--stage-green-text); }
+            .compare-pill.down { background: var(--stage-red-bg); color: var(--stage-red-text); }
+            .compare-pill.flat { background: var(--stage-gray-bg); color: var(--stage-gray-text); }
+            .compare-pill .compare-label { color: var(--text-muted); font-weight: 600; margin-right: 4px; }
             .card-meta span b { color: var(--text-dark); font-weight: 800; }
 
             .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; margin-bottom: 22px; align-items: stretch; }
@@ -1256,6 +1265,7 @@ async def serve_index(request: Request):
                     </div>
                     <div class="card-value" id="total-spend">0.00 ر.س</div>
                     <div class="card-sub" style="color:var(--text-muted);">جميع حسابات الربط</div>
+                    <div class="card-compare" id="total-compare"></div>
                     <div class="card-meta">
                         <span>CPC: <b id="total-cpc">0.00</b></span>
                         <span>CTR: <b id="total-ctr">0.0%</b></span>
@@ -1270,6 +1280,7 @@ async def serve_index(request: Request):
                     </div>
                     <div class="card-value" id="google-spend">0.00 ر.س</div>
                     <div class="card-sub" id="google-sub" style="color:var(--accent-blue);">0 إحالات</div>
+                    <div class="card-compare" id="google-compare"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="google-cpa">--</b></span>
                         <span>CTR: <b id="google-ctr">0.0%</b></span>
@@ -1284,6 +1295,7 @@ async def serve_index(request: Request):
                     </div>
                     <div class="card-value" id="tiktok-spend">0.00 ر.س</div>
                     <div class="card-sub" id="tiktok-sub" style="color:var(--accent-orange);">0 تحويل/نقرة</div>
+                    <div class="card-compare" id="tiktok-compare"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="tiktok-cpa">--</b></span>
                         <span>CTR: <b id="tiktok-ctr">0.0%</b></span>
@@ -1298,6 +1310,7 @@ async def serve_index(request: Request):
                     </div>
                     <div class="card-value" id="meta-spend">0.00 ر.س</div>
                     <div class="card-sub" id="meta-sub" style="color:#0284c7;">0 محادثة/نتيجة</div>
+                    <div class="card-compare" id="meta-compare"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="meta-cpa">--</b></span>
                         <span>CTR: <b id="meta-ctr">0.0%</b></span>
@@ -1397,6 +1410,8 @@ async def serve_index(request: Request):
             let donutInstance = null;
             let globalData = {};
             let lastMetrics = null;
+            let previousMetrics = null;
+            let previousRangeInfo = null;
             let isLoadingData = false;
 
             // نطاق التاريخ الحالي المطبَّق فعلياً على الطلب المرسل لـ Windsor.ai
@@ -1835,77 +1850,169 @@ async def serve_index(request: Request):
                 }
             }
 
-            function updateDashboardUI() {
-                let metaList = scopedList(globalData.meta_ads);
-                let tiktokList = scopedList(globalData.tiktok_ads);
-                let googleList = scopedList(globalData.google_ads);
+            // يحسب كل مؤشرات الأداء المجمّعة (إنفاق/نتائج/CTR/CPA) من بيانات فترة
+            // واحدة {meta_ads, tiktok_ads, google_ads}. دالة نقية بلا أي لمس لـ DOM،
+            // تُستخدم مرتين: مرة للفترة الحالية المعروضة، ومرة للفترة السابقة عند
+            // حساب شريط المقارنة - لضمان أن كلا الحسابين يستخدمان نفس المنطق تماماً.
+            function computeAggregateMetrics(data) {
+                const metaList = scopedList(data.meta_ads);
+                const tiktokList = scopedList(data.tiktok_ads);
+                const googleList = scopedList(data.google_ads);
 
-                let metaSpend = metaList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
-                let tiktokSpend = tiktokList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
-                let googleSpend = googleList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+                const metaSpend = metaList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+                const tiktokSpend = tiktokList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
+                const googleSpend = googleList.reduce((s, i) => s + safeNum(i.spend || i.cost), 0);
 
-                let metaConv = metaList.reduce((s, i) => s + parseMetaConversions(i), 0);
-                let tiktokConv = tiktokList.reduce((s, i) => s + safeNum(i.conversions || i.conversion || i.results), 0);
-                let googleConv = googleList.reduce((s, i) => s + parseGoogleConversions(i), 0);
+                const metaConv = metaList.reduce((s, i) => s + parseMetaConversions(i), 0);
+                const tiktokConv = tiktokList.reduce((s, i) => s + safeNum(i.conversions || i.conversion || i.results), 0);
+                const googleConv = googleList.reduce((s, i) => s + parseGoogleConversions(i), 0);
 
-                let metaClicks = metaList.reduce((s, i) => s + safeNum(i.clicks), 0);
-                let tiktokClicks = tiktokList.reduce((s, i) => s + safeNum(i.clicks), 0);
-                let googleClicks = googleList.reduce((s, i) => s + safeNum(i.clicks), 0);
+                const metaClicks = metaList.reduce((s, i) => s + safeNum(i.clicks), 0);
+                const tiktokClicks = tiktokList.reduce((s, i) => s + safeNum(i.clicks), 0);
+                const googleClicks = googleList.reduce((s, i) => s + safeNum(i.clicks), 0);
 
-                let metaImpr = metaList.reduce((s, i) => s + safeNum(i.impressions), 0);
-                let tiktokImpr = tiktokList.reduce((s, i) => s + safeNum(i.impressions), 0);
-                let googleImpr = googleList.reduce((s, i) => s + safeNum(i.impressions), 0);
+                const metaImpr = metaList.reduce((s, i) => s + safeNum(i.impressions), 0);
+                const tiktokImpr = tiktokList.reduce((s, i) => s + safeNum(i.impressions), 0);
+                const googleImpr = googleList.reduce((s, i) => s + safeNum(i.impressions), 0);
 
                 const ctrOf = (clicks, impr) => impr > 0 ? (clicks / impr) * 100 : 0;
                 const cpaOf = (spend, conv) => conv > 0 ? spend / conv : null;
                 const cpcOf = (spend, clicks) => clicks > 0 ? spend / clicks : 0;
 
-                let metaCtr = ctrOf(metaClicks, metaImpr);
-                let tiktokCtr = ctrOf(tiktokClicks, tiktokImpr);
-                let googleCtr = ctrOf(googleClicks, googleImpr);
+                const metaCtr = ctrOf(metaClicks, metaImpr);
+                const tiktokCtr = ctrOf(tiktokClicks, tiktokImpr);
+                const googleCtr = ctrOf(googleClicks, googleImpr);
 
-                let metaCpa = cpaOf(metaSpend, metaConv);
-                let tiktokCpa = cpaOf(tiktokSpend, tiktokConv);
-                let googleCpa = cpaOf(googleSpend, googleConv);
+                const metaCpa = cpaOf(metaSpend, metaConv);
+                const tiktokCpa = cpaOf(tiktokSpend, tiktokConv);
+                const googleCpa = cpaOf(googleSpend, googleConv);
 
-                let totalSpend = metaSpend + tiktokSpend + googleSpend;
-                let totalClicks = metaClicks + tiktokClicks + googleClicks;
-                let totalImpr = metaImpr + tiktokImpr + googleImpr;
+                const totalSpend = metaSpend + tiktokSpend + googleSpend;
+                const totalClicks = metaClicks + tiktokClicks + googleClicks;
+                const totalImpr = metaImpr + tiktokImpr + googleImpr;
+                const totalConv = metaConv + tiktokConv + googleConv;
 
-                document.getElementById('meta-spend').innerText = metaSpend.toFixed(2) + ' ر.س';
-                document.getElementById('tiktok-spend').innerText = tiktokSpend.toFixed(2) + ' ر.س';
-                document.getElementById('google-spend').innerText = googleSpend.toFixed(2) + ' ر.س';
-                document.getElementById('total-spend').innerText = totalSpend.toFixed(2) + ' ر.س';
+                return {
+                    metaSpend, tiktokSpend, googleSpend, totalSpend,
+                    metaConv, tiktokConv, googleConv, totalConv,
+                    metaClicks, tiktokClicks, googleClicks, totalClicks,
+                    metaImpr, tiktokImpr, googleImpr, totalImpr,
+                    metaCtr, tiktokCtr, googleCtr, totalCtr: ctrOf(totalClicks, totalImpr),
+                    metaCpa, tiktokCpa, googleCpa,
+                    totalCpc: cpcOf(totalSpend, totalClicks)
+                };
+            }
 
-                document.getElementById('meta-sub').innerText = `${metaConv.toLocaleString('en-US')} محادثة/نتيجة`;
-                document.getElementById('tiktok-sub').innerText = `${tiktokConv.toLocaleString('en-US')} تحويل/نقرة`;
-                document.getElementById('google-sub').innerText = `${googleConv.toLocaleString('en-US')} إحالات`;
+            function updateDashboardUI() {
+                const cur = computeAggregateMetrics(globalData);
 
-                document.getElementById('total-cpc').innerText = cpcOf(totalSpend, totalClicks).toFixed(2);
-                document.getElementById('total-ctr').innerText = ctrOf(totalClicks, totalImpr).toFixed(1) + '%';
-                document.getElementById('meta-ctr').innerText = metaCtr.toFixed(1) + '%';
-                document.getElementById('tiktok-ctr').innerText = tiktokCtr.toFixed(1) + '%';
-                document.getElementById('google-ctr').innerText = googleCtr.toFixed(1) + '%';
-                document.getElementById('meta-cpa').innerText = metaCpa !== null ? metaCpa.toFixed(2) : '--';
-                document.getElementById('tiktok-cpa').innerText = tiktokCpa !== null ? tiktokCpa.toFixed(2) : '--';
-                document.getElementById('google-cpa').innerText = googleCpa !== null ? googleCpa.toFixed(2) : '--';
+                document.getElementById('meta-spend').innerText = cur.metaSpend.toFixed(2) + ' ر.س';
+                document.getElementById('tiktok-spend').innerText = cur.tiktokSpend.toFixed(2) + ' ر.س';
+                document.getElementById('google-spend').innerText = cur.googleSpend.toFixed(2) + ' ر.س';
+                document.getElementById('total-spend').innerText = cur.totalSpend.toFixed(2) + ' ر.س';
+
+                document.getElementById('meta-sub').innerText = `${cur.metaConv.toLocaleString('en-US')} محادثة/نتيجة`;
+                document.getElementById('tiktok-sub').innerText = `${cur.tiktokConv.toLocaleString('en-US')} تحويل/نقرة`;
+                document.getElementById('google-sub').innerText = `${cur.googleConv.toLocaleString('en-US')} إحالات`;
+
+                document.getElementById('total-cpc').innerText = cur.totalCpc.toFixed(2);
+                document.getElementById('total-ctr').innerText = cur.totalCtr.toFixed(1) + '%';
+                document.getElementById('meta-ctr').innerText = cur.metaCtr.toFixed(1) + '%';
+                document.getElementById('tiktok-ctr').innerText = cur.tiktokCtr.toFixed(1) + '%';
+                document.getElementById('google-ctr').innerText = cur.googleCtr.toFixed(1) + '%';
+                document.getElementById('meta-cpa').innerText = cur.metaCpa !== null ? cur.metaCpa.toFixed(2) : '--';
+                document.getElementById('tiktok-cpa').innerText = cur.tiktokCpa !== null ? cur.tiktokCpa.toFixed(2) : '--';
+                document.getElementById('google-cpa').innerText = cur.googleCpa !== null ? cur.googleCpa.toFixed(2) : '--';
 
                 let timeText = buildRangeLabel(dateRangeState.preset, dateRangeState.date_from, dateRangeState.date_to);
                 let nowStr = new Date().toLocaleTimeString('en-US');
                 document.getElementById('update-time').innerText = `تقرير الأداء (${timeText}) - آخر تحديث: ${nowStr}`;
                 document.getElementById('range-caption').innerHTML = `الفترة المعروضة: <b>${timeText}</b>`;
 
-                updateChart(metaSpend, tiktokSpend, googleSpend);
-                updateDonut(metaConv, tiktokConv, googleConv);
+                updateChart(cur.metaSpend, cur.tiktokSpend, cur.googleSpend);
+                updateDonut(cur.metaConv, cur.tiktokConv, cur.googleConv);
                 renderExplorer();
 
                 lastMetrics = {
                     timeText, nowStr,
-                    metaSpend, tiktokSpend, googleSpend, totalSpend,
-                    metaConv, tiktokConv, googleConv,
-                    metaCtr, tiktokCtr, googleCtr,
-                    metaCpa, tiktokCpa, googleCpa
+                    metaSpend: cur.metaSpend, tiktokSpend: cur.tiktokSpend, googleSpend: cur.googleSpend, totalSpend: cur.totalSpend,
+                    metaConv: cur.metaConv, tiktokConv: cur.tiktokConv, googleConv: cur.googleConv, totalConv: cur.totalConv,
+                    metaCtr: cur.metaCtr, tiktokCtr: cur.tiktokCtr, googleCtr: cur.googleCtr,
+                    metaCpa: cur.metaCpa, tiktokCpa: cur.tiktokCpa, googleCpa: cur.googleCpa
                 };
+
+                // شريط الالسابق: طلب إضافي منفصل، لا يُعطّل عرض
+                // الأرقام الحالية (يعمل بالخلفية ويملأ الشارات عند وصول النتيجة)
+                updateComparisonPills(cur);
+            }
+
+            // يحسب "الفترة السابقة" كنافذة مساوية تماماً في عدد الأيام ومباشرة قبل
+            // الفترة الحالية - نفس منهج أدوات التحليل الاحترافية (Google Analytics
+            // ونحوها)، ويعمل بشكل صحيح ومنصف أياً كان الفلتر المختار (يوم واحد،
+            // أسبوع، شهر كامل، أو نطاق مخصص) دون أي حالات استثنائية أو التباس.
+            function computePreviousRange(dateFrom, dateTo) {
+                const from = new Date(dateFrom + 'T00:00:00');
+                const to = new Date(dateTo + 'T00:00:00');
+                const spanDays = Math.round((to - from) / 86400000) + 1;
+
+                const prevTo = new Date(from);
+                prevTo.setDate(prevTo.getDate() - 1);
+                const prevFrom = new Date(prevTo);
+                prevFrom.setDate(prevFrom.getDate() - (spanDays - 1));
+
+                return { from: toIsoDate(prevFrom), to: toIsoDate(prevTo) };
+            }
+
+            // يبني شارة مقارنة واحدة (▲/▼ + نسبة مئوية) بحسب المؤشر ومعناه: زيادة
+            // الإنفاق ليست بالضرورة "جيدة" فتُلوَّن محايدة (رمادية)، بينما زيادة
+            // النتائج جيدة (أخضر) وزيادة التكلفة/نتيجة (CPA) سيئة (أحمر) - أي
+            // انخفاضها هو التحسّن المطلوب.
+            function buildComparePillHtml(current, previous, opts) {
+                opts = opts || {};
+                const goodDirection = opts.goodDirection || 'up'; // 'up' | 'down' | 'neutral'
+                if (previous === null || previous === undefined) return '';
+                if (previous === 0) {
+                    if (current === 0) return '';
+                    return `<span class="compare-pill up"><span class="compare-label">السابق:</span>جديد ✨</span>`;
+                }
+                const change = ((current - previous) / previous) * 100;
+                if (Math.abs(change) < 0.1) {
+                    return `<span class="compare-pill flat"><span class="compare-label">السابق:</span>~ 0.0%</span>`;
+                }
+                const isIncrease = change > 0;
+                const arrow = isIncrease ? '▲' : '▼';
+                let cls;
+                if (goodDirection === 'neutral') {
+                    cls = 'flat';
+                } else {
+                    const isGood = goodDirection === 'up' ? isIncrease : !isIncrease;
+                    cls = isGood ? 'up' : 'down';
+                }
+                return `<span class="compare-pill ${cls}"><span class="compare-label">السابق:</span>${arrow} ${Math.abs(change).toFixed(1)}%</span>`;
+            }
+
+            async function updateComparisonPills(currentMetrics) {
+                const prevRange = computePreviousRange(dateRangeState.date_from, dateRangeState.date_to);
+                previousRangeInfo = prevRange;
+                try {
+                    const res = await fetch(`/api/data?date_from=${prevRange.from}&date_to=${prevRange.to}`);
+                    const json = await res.json();
+                    if (json.status !== 'success') return;
+
+                    const prev = computeAggregateMetrics(json.data || {});
+                    previousMetrics = prev;
+
+                    document.getElementById('total-compare').innerHTML =
+                        buildComparePillHtml(currentMetrics.totalSpend, prev.totalSpend, { goodDirection: 'neutral' });
+                    document.getElementById('meta-compare').innerHTML =
+                        buildComparePillHtml(currentMetrics.metaSpend, prev.metaSpend, { goodDirection: 'neutral' });
+                    document.getElementById('tiktok-compare').innerHTML =
+                        buildComparePillHtml(currentMetrics.tiktokSpend, prev.tiktokSpend, { goodDirection: 'neutral' });
+                    document.getElementById('google-compare').innerHTML =
+                        buildComparePillHtml(currentMetrics.googleSpend, prev.googleSpend, { goodDirection: 'neutral' });
+                } catch (e) {
+                    console.error('Error fetching comparison period:', e);
+                }
             }
 
             // ===== Name accessors shared with previous tree logic =====
@@ -2368,34 +2475,84 @@ async def serve_index(request: Request):
             function copyReport() {
                 if (!lastMetrics) return;
                 const m = lastMetrics;
-                const text =
-`📊 *تقرير أداء الإعلانات - elevenz*
-🗓️ الفترة: ${m.timeText}
-⏱️ آخر تحديث: ${m.nowStr}
+                const p = previousMetrics; // قد تكون لا تزال قيد التحميل (null) عند نقرة سريعة - نتعامل مع ذلك بأمان
 
-💰 *إجمالي الإنفاق:* ${fmt(m.totalSpend)} ر.س
+                const pctChange = (cur, prev) => {
+                    if (prev === null || prev === undefined) return null;
+                    if (prev === 0) return cur === 0 ? null : Infinity;
+                    return ((cur - prev) / prev) * 100;
+                };
+                const changeTag = (cur, prev) => {
+                    const c = pctChange(cur, prev);
+                    if (c === null) return '';
+                    if (c === Infinity) return ' (جديد ✨)';
+                    const arrow = c >= 0 ? '▲' : '▼';
+                    return ` (${arrow}${Math.abs(c).toFixed(1)}%)`;
+                };
+
+                const prevRangeText = previousRangeInfo
+                    ? `${formatDisplayDate(previousRangeInfo.from)} ← ${formatDisplayDate(previousRangeInfo.to)}`
+                    : '';
+
+                const comparisonHeader = p
+                    ? `📅 *الفترة الحالية:* ${m.timeText}\\n📅 *الفترة السابقة للمقارنة:* ${prevRangeText}\\n`
+                    : `📅 *الفترة:* ${m.timeText}\\n`;
+
+                const totalConvChange = p ? changeTag(m.totalConv, p.totalConv) : '';
+                const totalSpendChange = p ? changeTag(m.totalSpend, p.totalSpend) : '';
+                const metaSpendChange = p ? changeTag(m.metaSpend, p.metaSpend) : '';
+                const metaConvChange = p ? changeTag(m.metaConv, p.metaConv) : '';
+                const tiktokSpendChange = p ? changeTag(m.tiktokSpend, p.tiktokSpend) : '';
+                const tiktokConvChange = p ? changeTag(m.tiktokConv, p.tiktokConv) : '';
+                const googleSpendChange = p ? changeTag(m.googleSpend, p.googleSpend) : '';
+                const googleConvChange = p ? changeTag(m.googleConv, p.googleConv) : '';
+
+                const prevLine = (label, cur, prev) =>
+                    p ? `   (الفترة السابقة → ${label}: ${prev})` : '';
+
+                const text =
+`أنت خبير تسويق رقمي ومحلل أداء إعلانات محترف (Performance Marketing Specialist).
+حلّل بيانات أداء الحملات الإعلانية التالية وقدّم رؤى وتوصيات عملية:
+
+${comparisonHeader}⏱️ وقت إنشاء التقرير: ${m.nowStr}
+
+📊 *الأرقام الإجمالية*
+💰 الإنفاق الكلي: ${fmt(m.totalSpend)} ر.س${totalSpendChange}${p ? `\\n${prevLine('الإنفاق', m.totalSpend, fmt(p.totalSpend) + ' ر.س')}` : ''}
+🎯 إجمالي النتائج: ${m.totalConv.toLocaleString('en-US')}${totalConvChange}${p ? `\\n${prevLine('النتائج', m.totalConv, p.totalConv.toLocaleString('en-US'))}` : ''}
 
 📘 *Meta Ads*
-• الإنفاق: ${fmt(m.metaSpend)} ر.س
-• النتائج: ${m.metaConv.toLocaleString('en-US')}
+• الإنفاق: ${fmt(m.metaSpend)} ر.س${metaSpendChange}
+• النتائج: ${m.metaConv.toLocaleString('en-US')}${metaConvChange}
 • CTR: ${m.metaCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.metaCpa !== null ? fmt(m.metaCpa) + ' ر.س' : '--'}
+${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.metaSpend)} ر.س | النتائج: ${p.metaConv.toLocaleString('en-US')} | CTR: ${p.metaCtr.toFixed(1)}% | تكلفة/نتيجة: ${p.metaCpa !== null ? fmt(p.metaCpa) + ' ر.س' : '--'})` : ''}
 
 🎵 *TikTok Ads*
-• الإنفاق: ${fmt(m.tiktokSpend)} ر.س
-• التحويلات: ${m.tiktokConv.toLocaleString('en-US')}
+• الإنفاق: ${fmt(m.tiktokSpend)} ر.س${tiktokSpendChange}
+• التحويلات: ${m.tiktokConv.toLocaleString('en-US')}${tiktokConvChange}
 • CTR: ${m.tiktokCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.tiktokCpa !== null ? fmt(m.tiktokCpa) + ' ر.س' : '--'}
+${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.tiktokSpend)} ر.س | التحويلات: ${p.tiktokConv.toLocaleString('en-US')} | CTR: ${p.tiktokCtr.toFixed(1)}% | تكلفة/نتيجة: ${p.tiktokCpa !== null ? fmt(p.tiktokCpa) + ' ر.س' : '--'})` : ''}
 
 🔍 *Google Ads*
-• الإنفاق: ${fmt(m.googleSpend)} ر.س
-• الإحالات: ${m.googleConv.toLocaleString('en-US')}
+• الإنفاق: ${fmt(m.googleSpend)} ر.س${googleSpendChange}
+• الإحالات: ${m.googleConv.toLocaleString('en-US')}${googleConvChange}
 • CTR: ${m.googleCtr.toFixed(1)}%
 • تكلفة/نتيجة: ${m.googleCpa !== null ? fmt(m.googleCpa) + ' ر.س' : '--'}
+${p ? `  (الفترة السابقة → الإنفاق: ${fmt(p.googleSpend)} ر.س | الإحالات: ${p.googleConv.toLocaleString('en-US')} | CTR: ${p.googleCtr.toFixed(1)}% | تكلفة/نتيجة: ${p.googleCpa !== null ? fmt(p.googleCpa) + ' ر.س' : '--'})` : ''}
+
+---
+🎯 *المطلوب منك في 4 نقاط سريعة ومباشرة:*
+1. ملخص الأداء العام${p ? ' والمقارنة بين الفترتين' : ''}.
+2. أفضل منصة أداءً، والمنصة الأكثر استهلاكاً للميزانية دون نتائج كافية.
+3. السبب الفني المتوقع لأي ارتفاع أو انخفاض ملحوظ في CPA أو CTR.
+4. 3 توصيات عملية فورية لتعديل الميزانيات أو الإعلانات وتحسين التكلفة لكل نتيجة.
 
 _تم إنشاء هذا التقرير تلقائياً عبر منصة elevenz_`;
 
-                const finish = () => showToast('تم نسخ التقرير بنجاح! 📋');
+                const finish = () => showToast(
+                    p ? 'تم نسخ التقرير التحليلي! الصقه في أي ذكاء اصطناعي لتحليل فوري 🤖' : 'تم نسخ التقرير بنجاح! 📋'
+                );
 
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
