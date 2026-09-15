@@ -1358,8 +1358,8 @@ async def serve_index(request: Request):
                         <div class="chart-section-sub">كيف يقارن كل يوم باليوم الذي قبله - لكل منصة على حدة</div>
                     </div>
                     <div class="time-selector" style="margin-bottom:0;">
-                        <button class="time-btn active" data-metric="spend" onclick="setDailyMetric('spend', this)">الإنفاق</button>
-                        <button class="time-btn" data-metric="conv" onclick="setDailyMetric('conv', this)">النتائج</button>
+                        <button class="time-btn" data-metric="spend" onclick="setDailyMetric('spend', this)">الإنفاق</button>
+                        <button class="time-btn active" data-metric="conv" onclick="setDailyMetric('conv', this)">النتائج</button>
                     </div>
                 </div>
                 <div class="chart-wrapper" id="daily-trend-wrapper">
@@ -1977,7 +1977,7 @@ async def serve_index(request: Request):
             }
 
             let dailyTrendChartInstance = null;
-            let dailyTrendMetric = 'spend';
+            let dailyTrendMetric = 'conv';
 
             function setDailyMetric(metric, btn) {
                 dailyTrendMetric = metric;
@@ -2008,13 +2008,13 @@ async def serve_index(request: Request):
                 if (dailyTrendChartInstance) dailyTrendChartInstance.destroy();
 
                 dailyTrendChartInstance = new Chart(ctx, {
-                    type: 'line',
+                    type: 'bar',
                     data: {
                         labels,
                         datasets: [
-                            { label: 'Meta Ads', data: days.map(d => d[key.meta]), borderColor: '#0284c7', backgroundColor: '#0284c7', tension: 0.3, pointRadius: 3 },
-                            { label: 'TikTok Ads', data: days.map(d => d[key.tiktok]), borderColor: '#f05a28', backgroundColor: '#f05a28', tension: 0.3, pointRadius: 3 },
-                            { label: 'Google Ads', data: days.map(d => d[key.google]), borderColor: '#0f2540', backgroundColor: '#0f2540', tension: 0.3, pointRadius: 3 }
+                            { label: 'Meta Ads', data: days.map(d => d[key.meta]), backgroundColor: '#0284c7', borderRadius: 4, barPercentage: 0.7, categoryPercentage: 0.7 },
+                            { label: 'TikTok Ads', data: days.map(d => d[key.tiktok]), backgroundColor: '#f05a28', borderRadius: 4, barPercentage: 0.7, categoryPercentage: 0.7 },
+                            { label: 'Google Ads', data: days.map(d => d[key.google]), backgroundColor: '#0f2540', borderRadius: 4, barPercentage: 0.7, categoryPercentage: 0.7 }
                         ]
                     },
                     options: {
