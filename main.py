@@ -9,7 +9,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException, status, Form
+from fastapi import FastAPI, Request, Depends, HTTPException, status
+from urllib.parse import parse_qs
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -509,15 +510,26 @@ async def login_page(request: Request, error: int = 0):
 
 @app.post("/login")
 @limiter.limit("10/minute")
-async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+async def login_submit(request: Request):
     """يتحقق من بيانات الدخول (مقارنة زمنية ثابتة تقاوم هجمات التوقيت)، وعند
     النجاح يُصدر كوكي جلسة موقّعة صالحة لمدة 7 أيام. محدود بـ10 محاولات/دقيقة
-    لكل عنوان IP لإبطاء أي محاولة تخمين آلية."""
+    لكل عنوان IP لإبطاء أي محاولة تخمين آلية.
+
+    ملاحظة تقنية: نقرأ جسم الطلب ونحلّله يدوياً بدل استخدام معامل FastAPI
+    القياسي `Form(...)`، لأن ذاك المعامل يتطلب مكتبة خارجية إضافية
+    (python-multipart) حتى لتحليل نموذج urlencoded بسيط - وهي بالضبط المكتبة
+    الناقصة التي أسقطت النشر آخر مرة. التحليل هنا يستخدم فقط `urllib.parse`
+    القياسية في بايثون، فلا يمكن لأي حزمة ناقصة أن تُسقط تسجيل الدخول مجدداً."""
     if not AUTH_ENABLED:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
-    if secrets.compare_digest(username.strip(), DASHBOARD_USERNAME) and secrets.compare_digest(
-        password.strip(), DASHBOARD_PASSWORD
+    body = await request.body()
+    fields = parse_qs(body.decode("utf-8", errors="ignore"))
+    username = fields.get("username", [""])[0].strip()
+    password = fields.get("password", [""])[0].strip()
+
+    if secrets.compare_digest(username, DASHBOARD_USERNAME) and secrets.compare_digest(
+        password, DASHBOARD_PASSWORD
     ):
         token = create_session_token(DASHBOARD_USERNAME)
         response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
