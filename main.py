@@ -728,7 +728,7 @@ async def serve_index(request: Request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>منصة إعلانات elevenz</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
         <style>
@@ -986,6 +986,122 @@ async def serve_index(request: Request):
             .compare-pill.flat { background: var(--stage-gray-bg); color: var(--stage-gray-text); }
             .compare-pill .compare-label { color: var(--text-muted); font-weight: 600; margin-right: 4px; }
             .card-meta span b { color: var(--text-dark); font-weight: 800; }
+
+            /* ===================== KPI Cards v2 ===================== */
+            /* كل بطاقة تأخذ هويتها اللونية من متغيرات --kpi-* المعرفة في كلاس المنصة */
+            .kpi-card {
+                --kpi-accent: #64748b; --kpi-accent-2: #94a3b8;
+                --kpi-tint: rgba(100, 116, 139, 0.06); --kpi-border: rgba(100, 116, 139, 0.18);
+                --kpi-border-hover: rgba(100, 116, 139, 0.40); --kpi-glow: rgba(100, 116, 139, 0.10);
+                --kpi-shadow: rgba(15, 37, 64, 0.25); --kpi-ink: #334155; --kpi-icon-bg: #ffffff;
+                position: relative; overflow: hidden; isolation: isolate;
+                background: linear-gradient(180deg, var(--kpi-tint) 0%, rgba(255, 255, 255, 0.88) 58%, rgba(255, 255, 255, 0.96) 100%);
+                -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+                border: 1px solid var(--kpi-border);
+                border-radius: 16px;
+                padding: 24px 22px 20px;
+                box-shadow: 0 1px 1px rgba(15, 37, 64, 0.03), 0 2px 4px -1px rgba(15, 37, 64, 0.04), 0 10px 22px -14px rgba(15, 37, 64, 0.14);
+                transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease, border-color 0.3s ease;
+            }
+            .kpi-card::before {
+                content: ""; position: absolute; top: 0; right: 0; left: 0; height: 3px;
+                background: linear-gradient(90deg, var(--kpi-accent), var(--kpi-accent-2));
+            }
+            .kpi-card::after {
+                content: ""; position: absolute; z-index: -1; pointer-events: none;
+                width: 200px; height: 200px; top: -100px; left: -70px; border-radius: 50%;
+                background: radial-gradient(circle, var(--kpi-glow) 0%, transparent 70%);
+            }
+            .kpi-card:hover {
+                transform: translateY(-4px);
+                border-color: var(--kpi-border-hover);
+                box-shadow: 0 0 0 4px var(--kpi-glow), 0 2px 4px -1px rgba(15, 37, 64, 0.05), 0 20px 36px -18px var(--kpi-shadow);
+            }
+            .kpi-card .card-top { margin-bottom: 16px; }
+            .kpi-card .card-title { font-size: 13px; font-weight: 700; color: #64748b; }
+            .kpi-card .card-icon {
+                width: 40px; height: 40px; border-radius: 12px; color: var(--kpi-accent);
+                background: var(--kpi-icon-bg);
+                box-shadow: 0 0 0 1px var(--kpi-border), 0 6px 14px -6px var(--kpi-shadow);
+            }
+            .kpi-card .card-value {
+                display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+                margin-bottom: 6px; letter-spacing: 0;
+            }
+            .kpi-num {
+                font-family: 'Manrope', 'Cairo', sans-serif; font-size: 32px; font-weight: 800;
+                line-height: 1.1; letter-spacing: -1px; color: #0b1b33;
+                font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate;
+            }
+            .kpi-cur { font-size: 13px; font-weight: 700; color: #94a3b8; }
+            .kpi-card .card-sub { color: var(--kpi-ink); font-size: 12.5px; font-weight: 800; }
+            .kpi-card .card-compare { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 22px; }
+            .kpi-card .card-compare:empty { display: none; }
+            .kpi-card .card-accounts { margin-top: 12px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.7); box-shadow: inset 0 0 0 1px var(--kpi-border); }
+            .kpi-card .card-accounts:empty { display: none; }
+            .kpi-card .card-meta { border-top: 1px solid var(--kpi-border); margin-top: 14px; padding-top: 12px; }
+            .kpi-card .card-meta span b { font-family: 'Manrope', 'Cairo', sans-serif; font-variant-numeric: tabular-nums; }
+
+            /* إجمالي الإنفاق: زمرد */
+            .kpi-total {
+                --kpi-accent: #059669; --kpi-accent-2: #34d399;
+                --kpi-tint: rgba(16, 185, 129, 0.09); --kpi-border: rgba(16, 185, 129, 0.24);
+                --kpi-border-hover: rgba(16, 185, 129, 0.50); --kpi-glow: rgba(16, 185, 129, 0.13);
+                --kpi-shadow: rgba(5, 150, 105, 0.40); --kpi-ink: #047857; --kpi-icon-bg: #ecfdf5;
+            }
+            /* Meta: أزرق */
+            .kpi-meta {
+                --kpi-accent: #0866ff; --kpi-accent-2: #60a5fa;
+                --kpi-tint: rgba(8, 102, 255, 0.08); --kpi-border: rgba(8, 102, 255, 0.22);
+                --kpi-border-hover: rgba(8, 102, 255, 0.50); --kpi-glow: rgba(8, 102, 255, 0.12);
+                --kpi-shadow: rgba(8, 102, 255, 0.38); --kpi-ink: #0550c8; --kpi-icon-bg: #eff6ff;
+            }
+            /* TikTok: نيون Cyan/Magenta بإطار داكن */
+            .kpi-tiktok {
+                --kpi-accent: #25f4ee; --kpi-accent-2: #fe2c55;
+                --kpi-tint: rgba(37, 244, 238, 0.08); --kpi-border: rgba(15, 23, 42, 0.16);
+                --kpi-border-hover: rgba(254, 44, 85, 0.45); --kpi-glow: rgba(254, 44, 85, 0.10);
+                --kpi-shadow: rgba(15, 15, 15, 0.38); --kpi-ink: #e11d48; --kpi-icon-bg: #0f0f0f;
+                background:
+                    radial-gradient(120% 70% at 100% 0%, rgba(37, 244, 238, 0.11), transparent 60%),
+                    radial-gradient(90% 60% at 0% 0%, rgba(254, 44, 85, 0.08), transparent 60%),
+                    rgba(255, 255, 255, 0.94);
+            }
+            /* Google: ألوان جوجل + تدرج كهرماني هادئ */
+            .kpi-google {
+                --kpi-accent: #fbbc04; --kpi-accent-2: #f97316;
+                --kpi-tint: rgba(251, 188, 4, 0.10); --kpi-border: rgba(217, 119, 6, 0.22);
+                --kpi-border-hover: rgba(217, 119, 6, 0.50); --kpi-glow: rgba(251, 188, 4, 0.16);
+                --kpi-shadow: rgba(217, 119, 6, 0.35); --kpi-ink: #b45309; --kpi-icon-bg: #ffffff;
+            }
+            .kpi-google::before {
+                background: linear-gradient(90deg, #4285f4 0 25%, #ea4335 25% 50%, #fbbc04 50% 75%, #34a853 75% 100%);
+            }
+
+            /* شارات المقارنة: كبسولات مضيئة */
+            .compare-pill {
+                display: inline-flex; align-items: center; gap: 5px;
+                padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 800;
+                line-height: 1.6; font-variant-numeric: tabular-nums; white-space: nowrap;
+            }
+            .compare-pill.up {
+                background: rgba(16, 185, 129, 0.12); color: #047857;
+                box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.30), 0 0 14px -4px rgba(16, 185, 129, 0.45);
+            }
+            .compare-pill.down {
+                background: rgba(239, 68, 68, 0.10); color: #b91c1c;
+                box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.28), 0 0 14px -4px rgba(239, 68, 68, 0.40);
+            }
+            .compare-pill.flat {
+                background: rgba(100, 116, 139, 0.10); color: #475569;
+                box-shadow: inset 0 0 0 1px rgba(100, 116, 139, 0.22);
+            }
+            .compare-pill .compare-label { color: inherit; opacity: 0.72; font-weight: 700; margin: 0; }
+
+            @media (prefers-reduced-motion: reduce) {
+                .kpi-card { transition: none; }
+                .kpi-card:hover { transform: none; }
+            }
 
             .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; margin-bottom: 22px; align-items: stretch; }
 
@@ -1401,63 +1517,63 @@ async def serve_index(request: Request):
             <div class="range-caption" id="range-caption">الفترة المعروضة: <b>أمس</b></div>
 
             <div class="cards-container">
-                <div class="card">
+                <div class="card kpi-card kpi-total">
                     <div class="card-top">
                         <div class="card-title">إجمالي الإنفاق (الكلي)</div>
-                        <div class="card-icon icon-wallet" style="background:var(--accent-orange-light);">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="#f05a28" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"></path><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path></svg>
+                        <div class="card-icon icon-wallet">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"></path><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path></svg>
                         </div>
                     </div>
-                    <div class="card-value" id="total-spend">0.00 ر.س</div>
-                    <div class="card-sub" style="color:var(--text-muted);">جميع حسابات الربط</div>
-                    <div class="card-compare" id="total-compare"></div>
+                    <div class="card-value" id="total-spend"><span class="kpi-num">0.00</span><span class="kpi-cur">ر.س</span></div>
+                    <div class="card-sub">جميع حسابات الربط</div>
+                    <div class="card-compare"><span id="total-compare"></span><span id="total-conv-compare"></span></div>
                     <div class="card-meta">
                         <span>CPC: <b id="total-cpc">0.00</b></span>
                         <span>CTR: <b id="total-ctr">0.0%</b></span>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card kpi-card kpi-google">
                     <div class="card-top">
                         <div class="card-title">Google Ads</div>
-                        <div class="card-icon" style="background:#f8f9fa;">
+                        <div class="card-icon">
                             <svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.303c-1.649,4.657-6.08,8-11.303,8c-6.627,0-12-5.373-12-12c0-6.627,5.373-12,12-12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C12.955,4,4,12.955,4,24c0,11.045,8.955,20,20,20c11.045,0,20-8.955,20-20C44,22.659,43.862,21.35,43.611,20.083z"></path><path fill="#FF3D00" d="M6.306,14.691l6.571,4.819C14.655,15.108,18.961,12,24,12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C16.318,4,9.656,8.337,6.306,14.691z"></path><path fill="#4CAF50" d="M24,44c5.166,0,9.86-1.977,13.409-5.192l-6.19-5.238C29.211,35.091,26.715,36,24,36c-5.202,0-9.619-3.317-11.283-7.946l-6.522,5.025C9.505,39.556,16.227,44,24,44z"></path><path fill="#1976D2" d="M43.611,20.083H42V20H24v8h11.303c-0.792,2.237-2.231,4.166-4.087,5.571c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z"></path></svg>
                         </div>
                     </div>
-                    <div class="card-value" id="google-spend">0.00 ر.س</div>
-                    <div class="card-sub" id="google-sub" style="color:var(--accent-blue);">0 إحالات</div>
-                    <div class="card-compare" id="google-compare"></div>
+                    <div class="card-value" id="google-spend"><span class="kpi-num">0.00</span><span class="kpi-cur">ر.س</span></div>
+                    <div class="card-sub" id="google-sub">0 إحالات</div>
+                    <div class="card-compare"><span id="google-compare"></span><span id="google-conv-compare"></span></div>
                     <div class="card-accounts" id="google-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="google-cpa">--</b></span>
                         <span>CTR: <b id="google-ctr">0.0%</b></span>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card kpi-card kpi-tiktok">
                     <div class="card-top">
                         <div class="card-title">TikTok Ads</div>
-                        <div class="card-icon" style="background:#0f0f0f;">
+                        <div class="card-icon">
                             <svg viewBox="0 0 48 48"><path fill="#25F4EE" d="M33.6,15.4c-2.1-1.4-3.6-3.6-4-6.2c-0.1-0.5-0.1-1-0.1-1.5h-6v24.6c0,2.9-2.4,5.3-5.3,5.3 c-0.9,0-1.8-0.2-2.5-0.7c-1.7-0.9-2.8-2.7-2.8-4.7c0-2.9,2.4-5.3,5.3-5.3c0.5,0,1.1,0.1,1.6,0.3v-6.1c-0.5-0.1-1-0.1-1.6-0.1 c-6.3,0-11.4,5.1-11.4,11.4c0,3.9,1.9,7.3,4.9,9.4c1.9,1.3,4.2,2.1,6.7,2.1c6.3,0,11.4-5.1,11.4-11.4V19.1 c2.4,1.8,5.4,2.8,8.6,2.8v-6C36.9,15.9,35.1,15.8,33.6,15.4z"></path><path fill="#FE2C55" d="M31.6,13.4c-2.1-1.4-3.6-3.6-4-6.2c-0.1-0.5-0.1-1-0.1-1.5h-6v24.6c0,2.9-2.4,5.3-5.3,5.3 c-0.9,0-1.8-0.2-2.5-0.7c-1.5-0.8-2.6-2.4-2.8-4.2c-0.4-2.9,1.7-5.6,4.5-6c0.5-0.1,1.1-0.1,1.6,0v-6.1c-6.2-0.1-11.3,4.9-11.4,11.1 c0,3.9,1.9,7.5,4.9,9.6c1.9,1.3,4.2,2.1,6.7,2.1c6.3,0,11.4-5.1,11.4-11.4V17.1c2.4,1.8,5.4,2.8,8.6,2.8v-6 C34.9,13.9,33.1,13.8,31.6,13.4z"></path><path fill="#ffffff" d="M35,17.9c-3.2,0-6.2-1-8.6-2.8v14.7c0,6.3-5.1,11.4-11.4,11.4c-2.5,0-4.8-0.8-6.7-2.1 c2.1,2.3,5.1,3.7,8.4,3.7c6.3,0,11.4-5.1,11.4-11.4V16.7c2.4,1.8,5.4,2.8,8.6,2.8v-6C36.4,13.5,36.4,13.5,35,17.9z"></path></svg>
                         </div>
                     </div>
-                    <div class="card-value" id="tiktok-spend">0.00 ر.س</div>
-                    <div class="card-sub" id="tiktok-sub" style="color:var(--accent-orange);">0 تحويل/نقرة</div>
-                    <div class="card-compare" id="tiktok-compare"></div>
+                    <div class="card-value" id="tiktok-spend"><span class="kpi-num">0.00</span><span class="kpi-cur">ر.س</span></div>
+                    <div class="card-sub" id="tiktok-sub">0 تحويل/نقرة</div>
+                    <div class="card-compare"><span id="tiktok-compare"></span><span id="tiktok-conv-compare"></span></div>
                     <div class="card-accounts" id="tiktok-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="tiktok-cpa">--</b></span>
                         <span>CTR: <b id="tiktok-ctr">0.0%</b></span>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card kpi-card kpi-meta">
                     <div class="card-top">
                         <div class="card-title">Meta Ads</div>
-                        <div class="card-icon" style="background:#e7f0ff;">
+                        <div class="card-icon">
                             <svg viewBox="0 0 36 36"><path fill="#1877F2" d="M36,18c0-9.94-8.06-18-18-18S0,8.06,0,18c0,8.98,6.58,16.41,15.19,17.76V23.13h-4.57V18h4.57v-3.91 c0-4.51,2.69-7.01,6.8-7.01c1.97,0,4.03,0.35,4.03,0.35v4.43h-2.27c-2.24,0-2.94,1.39-2.94,2.81V18h5.01l-0.8,5.13h-4.21v12.63 C29.42,34.41,36,26.98,36,18z"></path></svg>
                         </div>
                     </div>
-                    <div class="card-value" id="meta-spend">0.00 ر.س</div>
-                    <div class="card-sub" id="meta-sub" style="color:#0284c7;">0 محادثة/نتيجة</div>
-                    <div class="card-compare" id="meta-compare"></div>
+                    <div class="card-value" id="meta-spend"><span class="kpi-num">0.00</span><span class="kpi-cur">ر.س</span></div>
+                    <div class="card-sub" id="meta-sub">0 محادثة/نتيجة</div>
+                    <div class="card-compare"><span id="meta-compare"></span><span id="meta-conv-compare"></span></div>
                     <div class="card-accounts" id="meta-accounts"></div>
                     <div class="card-meta">
                         <span>CPA: <b id="meta-cpa">--</b></span>
@@ -2294,6 +2410,14 @@ async def serve_index(request: Request):
                 };
             }
 
+            // يكتب رقم البطاقة بخط عريض والعملة بخط أصغر رمادي
+            function setKpiMoney(id, value) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const num = Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                el.innerHTML = `<span class="kpi-num">${num}</span><span class="kpi-cur">ر.س</span>`;
+            }
+
             function updateDashboardUI() {
                 const cur = computeAggregateMetrics(globalData);
 
@@ -2301,10 +2425,10 @@ async def serve_index(request: Request):
                 renderAccountBreakdown('tiktok-accounts', computeAccountBreakdown(globalData.tiktok_ads, i => safeNum(i.conversions || i.conversion || i.results)), 'تحويل');
                 renderAccountBreakdown('google-accounts', computeAccountBreakdown(globalData.google_ads, parseGoogleConversions), 'إحالة');
 
-                document.getElementById('meta-spend').innerText = cur.metaSpend.toFixed(2) + ' ر.س';
-                document.getElementById('tiktok-spend').innerText = cur.tiktokSpend.toFixed(2) + ' ر.س';
-                document.getElementById('google-spend').innerText = cur.googleSpend.toFixed(2) + ' ر.س';
-                document.getElementById('total-spend').innerText = cur.totalSpend.toFixed(2) + ' ر.س';
+                setKpiMoney('meta-spend', cur.metaSpend);
+                setKpiMoney('tiktok-spend', cur.tiktokSpend);
+                setKpiMoney('google-spend', cur.googleSpend);
+                setKpiMoney('total-spend', cur.totalSpend);
 
                 document.getElementById('meta-sub').innerText = `${cur.metaConv.toLocaleString('en-US')} محادثة/نتيجة`;
                 document.getElementById('tiktok-sub').innerText = `${cur.tiktokConv.toLocaleString('en-US')} تحويل/نقرة`;
@@ -2367,14 +2491,15 @@ async def serve_index(request: Request):
             function buildComparePillHtml(current, previous, opts) {
                 opts = opts || {};
                 const goodDirection = opts.goodDirection || 'up'; // 'up' | 'down' | 'neutral'
+                const labelText = opts.label || 'السابق:';
                 if (previous === null || previous === undefined) return '';
                 if (previous === 0) {
                     if (current === 0) return '';
-                    return `<span class="compare-pill up"><span class="compare-label">السابق:</span>جديد ✨</span>`;
+                    return `<span class="compare-pill up"><span class="compare-label">${labelText}</span>جديد ✨</span>`;
                 }
                 const change = ((current - previous) / previous) * 100;
                 if (Math.abs(change) < 0.1) {
-                    return `<span class="compare-pill flat"><span class="compare-label">السابق:</span>~ 0.0%</span>`;
+                    return `<span class="compare-pill flat"><span class="compare-label">${labelText}</span>~ 0.0%</span>`;
                 }
                 const isIncrease = change > 0;
                 const arrow = isIncrease ? '▲' : '▼';
@@ -2385,7 +2510,7 @@ async def serve_index(request: Request):
                     const isGood = goodDirection === 'up' ? isIncrease : !isIncrease;
                     cls = isGood ? 'up' : 'down';
                 }
-                return `<span class="compare-pill ${cls}"><span class="compare-label">السابق:</span>${arrow} ${Math.abs(change).toFixed(1)}%</span>`;
+                return `<span class="compare-pill ${cls}"><span class="compare-label">${labelText}</span>${arrow} ${Math.abs(change).toFixed(1)}%</span>`;
             }
 
             async function updateComparisonPills(currentMetrics) {
@@ -2400,14 +2525,20 @@ async def serve_index(request: Request):
                     previousMetrics = prev;
                     previousRawData = json.data || {}; // للمقارنة على مستوى الصف الواحد في الجدول
 
-                    document.getElementById('total-compare').innerHTML =
-                        buildComparePillHtml(currentMetrics.totalSpend, prev.totalSpend, { goodDirection: 'neutral' });
-                    document.getElementById('meta-compare').innerHTML =
-                        buildComparePillHtml(currentMetrics.metaSpend, prev.metaSpend, { goodDirection: 'neutral' });
-                    document.getElementById('tiktok-compare').innerHTML =
-                        buildComparePillHtml(currentMetrics.tiktokSpend, prev.tiktokSpend, { goodDirection: 'neutral' });
-                    document.getElementById('google-compare').innerHTML =
-                        buildComparePillHtml(currentMetrics.googleSpend, prev.googleSpend, { goodDirection: 'neutral' });
+                    // الصرف: رمادي محايد (زيادة الصرف ليست جيدة أو سيئة بذاتها)
+                    // النتائج: أخضر عند التحسن وأحمر عند التراجع
+                    const pillPairs = [
+                        ['total', currentMetrics.totalSpend, prev.totalSpend, currentMetrics.totalConv, prev.totalConv],
+                        ['meta', currentMetrics.metaSpend, prev.metaSpend, currentMetrics.metaConv, prev.metaConv],
+                        ['tiktok', currentMetrics.tiktokSpend, prev.tiktokSpend, currentMetrics.tiktokConv, prev.tiktokConv],
+                        ['google', currentMetrics.googleSpend, prev.googleSpend, currentMetrics.googleConv, prev.googleConv]
+                    ];
+                    pillPairs.forEach(([key, curSpend, prevSpend, curConv, prevConv]) => {
+                        const spendEl = document.getElementById(key + '-compare');
+                        const convEl = document.getElementById(key + '-conv-compare');
+                        if (spendEl) spendEl.innerHTML = buildComparePillHtml(curSpend, prevSpend, { goodDirection: 'neutral', label: 'الصرف' });
+                        if (convEl) convEl.innerHTML = buildComparePillHtml(curConv, prevConv, { goodDirection: 'up', label: 'النتائج' });
+                    });
 
                     // أعد رسم الجدول ومركز القرار الآن بعد وصول بيانات المقارنة، حتى تظهر
                     // أعمدة المقارنة وتلميحات السبب الجذري (تحتاج الفترة السابقة)
