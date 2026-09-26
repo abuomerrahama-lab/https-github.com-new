@@ -1483,6 +1483,61 @@ async def serve_index(request: Request):
                 .cards-container { grid-template-columns: 1fr !important; }
                 .grid-2 { grid-template-columns: 1fr !important; }
                 .top-bar { flex-direction: column; align-items: stretch; }
+
+                /* ===== نسخة الجوال ===== */
+                /* body مرن أفقياً على سطح المكتب (قائمة جانبية + محتوى)؛ على الجوال يجب أن
+                   يكون عمودياً وإلا يصطف الشريط العلوي بجانب المحتوى ويضغطه لشريط ضيق. */
+                body { display: block; }
+                .main-content { overflow: visible; }
+
+                .top-bar { gap: 14px; margin-bottom: 18px; }
+                .header-title h1 { font-size: 19px; line-height: 1.5; }
+                .header-title p { font-size: 12px; }
+                .top-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .top-actions .btn { justify-content: center; padding: 10px 6px; font-size: 12px; gap: 5px; white-space: nowrap; }
+                .top-actions .btn-refresh { grid-column: 1 / -1; }
+
+                /* فلاتر التاريخ: شريط أفقي يُسحب بالإصبع بدل تكدّس الأزرار عمودياً */
+                .time-selector { flex-wrap: nowrap; overflow-x: auto; margin: 0 -16px 10px; padding: 2px 16px 6px; scrollbar-width: none; }
+                .time-selector::-webkit-scrollbar { display: none; }
+                .time-btn { flex-shrink: 0; padding: 8px 16px; }
+                .custom-range-box { flex-shrink: 0; }
+                .range-caption { margin-bottom: 18px; }
+
+                .cards-container { gap: 12px; margin-bottom: 16px; }
+                .kpi-card { padding: 18px 16px 16px; }
+                .kpi-card:hover { transform: none; }
+                .kpi-card .card-top { margin-bottom: 10px; }
+                .kpi-num { font-size: 28px; }
+                .card-accounts .account-row .account-name { max-width: 52%; }
+
+                .chart-section { padding: 16px; }
+                .chart-wrapper { height: 220px; }
+                .donut-wrapper { height: 190px; }
+                #decision-center-section, #daily-trend-section { margin-bottom: 16px !important; }
+                .grid-2 { gap: 12px; margin-bottom: 16px; }
+
+                /* المستكشف: التبويبات تُسحب أفقياً، والرأس غير ثابت حتى لا يغطي الشاشة */
+                .explorer-sticky-zone { position: static; box-shadow: none; }
+                .explorer-top { padding: 14px 16px 0; }
+                .platform-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; max-width: 100%; }
+                .platform-tabs::-webkit-scrollbar { display: none; }
+                .platform-tab { flex-shrink: 0; padding: 7px 12px; }
+                .level-tabs { padding: 12px 16px 0; gap: 14px; }
+                .level-tab { font-size: 13px; }
+                .filter-chips { padding: 12px 16px 0; }
+                .table-toolbar { padding: 12px 16px; gap: 8px; }
+                .search-input { flex-basis: 100%; min-width: 0; }
+                .toolbar-btn { flex: 1 1 calc(50% - 4px); justify-content: center; }
+                .date-filter-panel { width: min(250px, calc(100vw - 32px)); }
+                th, td { padding: 10px 12px; }
+                table { font-size: 12.5px; min-width: 760px; }
+
+                /* مركز القرار: أهم 3 بنود فقط في كل عمود على الجوال لتفادي صفحة طويلة جداً */
+                .dc-items .dc-card:nth-child(n+4) { display: none; }
+                .dc-grid { gap: 12px; }
+
+                #toast { white-space: normal; text-align: center; max-width: calc(100vw - 32px); bottom: 20px; }
             }
 
             @media (max-width: 1100px) {
