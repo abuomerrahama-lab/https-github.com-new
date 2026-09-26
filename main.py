@@ -1615,8 +1615,8 @@ async def serve_index(request: Request):
             <div class="chart-section" id="daily-trend-section" style="margin-bottom:22px;">
                 <div style="display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
                     <div>
-                        <div class="chart-section-title" style="margin-bottom:4px;">الأداء اليومي خلال الفترة</div>
-                        <div class="chart-section-sub">كيف يقارن كل يوم باليوم الذي قبله - لكل منصة على حدة</div>
+                        <div class="chart-section-title" style="margin-bottom:4px;">الأداء اليومي - آخر 14 يوماً</div>
+                        <div class="chart-section-sub">اتجاه ثابت لآخر 14 يوماً لكل منصة، بمعزل عن الفترة المختارة في الأعلى</div>
                     </div>
                     <div class="time-selector" style="margin-bottom:0;">
                         <button class="time-btn" data-metric="spend" onclick="setDailyMetric('spend', this)">الإنفاق</button>
@@ -1626,7 +1626,7 @@ async def serve_index(request: Request):
                 <div class="chart-wrapper" id="daily-trend-wrapper">
                     <canvas id="dailyTrendChart"></canvas>
                 </div>
-                <div class="empty-state" id="daily-trend-empty" style="display:none;">اختر فترة أطول من يوم واحد لعرض الاتجاه اليومي</div>
+                <div class="empty-state" id="daily-trend-empty" style="display:none;">لا توجد بيانات كافية لآخر 14 يوماً بعد</div>
             </div>
 
             <div class="explorer-card">
@@ -2119,7 +2119,7 @@ async def serve_index(request: Request):
                 if (isLoadingData) return;
                 const { date_from, date_to } = dateRangeState;
                 if (!date_from || !date_to) return;
-                await fetchDataForRange(date_from, date_to);
+                await Promise.all([fetchDataForRange(date_from, date_to), fetchDailyTrendData()]);
                 showToast('تم تحديث البيانات! 🔄');
             }
 
@@ -2228,10 +2228,37 @@ async def serve_index(request: Request):
                 }
             }
 
-            // يجمّع بيانات المنصات الثلاث (المحمَّلة أصلاً في الذاكرة - بلا أي طلب
-            // إضافي للخادم) حسب التاريخ، بدل حسب الحملة/المجموعة، لبناء اتجاه يومي.
-            // كل صف في البيانات الخام يحمل حقل "date" أصلاً (نفس الحقل المستخدم في
-            // فلترة/تجميع الجدول)، فهذا تجميع بديل بمفتاح مختلف فقط.
+            // الرسم اليومي يعرض دائماً آخر 14 يوماً بغض النظر عن فلتر التاريخ.
+            // نقرأها من كاش الخادم (/api/data بلا نطاق = آخر 30 يوماً، يُحدَّث كل 90
+            // ثانية) ونقتطع آخر 14 يوماً محلياً - فلا طلبات إضافية إلى Windsor.ai.
+            const DAILY_TREND_DAYS = 14;
+            let dailyTrendData = {};
+
+            async function fetchDailyTrendData() {
+                const range = computePresetRange('last14');
+                const inRange = list => scopedList(list).filter(i => i.date && i.date >= range.from && i.date <= range.to);
+                try {
+                    let res = await fetch('/api/data');
+                    let json = await res.json();
+                    let data = (json && json.data) || {};
+                    // الكاش فارغ لحظة إقلاع الخادم - نطلب النطاق صراحة كبديل
+                    if (!scopedList(data.meta_ads).length && !scopedList(data.tiktok_ads).length && !scopedList(data.google_ads).length) {
+                        res = await fetch(`/api/data?date_from=${range.from}&date_to=${range.to}`);
+                        json = await res.json();
+                        data = (json && json.data) || {};
+                    }
+                    dailyTrendData = {
+                        meta_ads: inRange(data.meta_ads),
+                        tiktok_ads: inRange(data.tiktok_ads),
+                        google_ads: inRange(data.google_ads)
+                    };
+                } catch (e) {
+                    console.error('Error fetching daily trend data:', e);
+                }
+                renderDailyTrendChart();
+            }
+
+            // يجمّع بيانات آخر 14 يوماً حسب التاريخ لبناء الاتجاه اليومي.
             function computeDailyBreakdown() {
                 const byDate = {};
                 const addRows = (list, platformKey) => {
@@ -2252,9 +2279,9 @@ async def serve_index(request: Request):
                         }
                     });
                 };
-                addRows(globalData.meta_ads, 'meta');
-                addRows(globalData.tiktok_ads, 'tiktok');
-                addRows(globalData.google_ads, 'google');
+                addRows(dailyTrendData.meta_ads, 'meta');
+                addRows(dailyTrendData.tiktok_ads, 'tiktok');
+                addRows(dailyTrendData.google_ads, 'google');
 
                 return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
             }
@@ -2306,6 +2333,7 @@ async def serve_index(request: Request):
                         plugins: {
                             legend: { position: 'top', labels: { font: { family: 'Cairo', weight: '600' }, boxWidth: 10, usePointStyle: true } },
                             datalabels: {
+                                display: dailyTrendMetric === 'conv',
                                 anchor: 'end',
                                 align: 'top',
                                 color: '#0f2540',
@@ -3617,6 +3645,7 @@ _تم إعداد هذا التقرير آلياً عبر منصة Elevenz_`;
 
             document.addEventListener('DOMContentLoaded', () => {
                 applyDatePreset('yesterday');
+                fetchDailyTrendData();
             });
         </script>
     </body>
