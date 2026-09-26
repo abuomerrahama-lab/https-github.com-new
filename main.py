@@ -1493,7 +1493,7 @@ async def serve_index(request: Request):
                 .top-bar { gap: 14px; margin-bottom: 18px; }
                 .header-title h1 { font-size: 19px; line-height: 1.5; }
                 .header-title p { font-size: 12px; }
-                .top-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .top-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
                 .top-actions .btn { justify-content: center; padding: 10px 6px; font-size: 12px; gap: 5px; white-space: nowrap; }
                 .top-actions .btn-refresh { grid-column: 1 / -1; }
 
@@ -1586,7 +1586,10 @@ async def serve_index(request: Request):
                         نسخ
                     </button>
                     <button class="btn btn-copy" id="visits-report-btn" onclick="sendVisitsReportWhatsapp()" title="يفتح واتساب ويب على محادثة الزميلة ومعه تقرير أمس لمجموعة الزيارات على TikTok">
-                        📲 تقرير الزيارات
+                        💻 تقرير الزيارات (ويب)
+                    </button>
+                    <button class="btn btn-copy" id="visits-report-app-btn" onclick="sendVisitsReportWhatsappApp()" title="يفتح تطبيق واتساب على الجوال مباشرة على محادثة الزميلة ومعه تقرير أمس">
+                        📱 تقرير الزيارات (الجوال)
                     </button>
                     <button class="btn btn-copy" onclick="copyReportForAnalysis()">
                         🤖 نسخ للتحليل
@@ -3721,15 +3724,44 @@ _تم إعداد هذا التقرير آلياً عبر منصة Elevenz_`;
                 ].join(String.fromCharCode(10));
             }
 
+            // نص التقرير يُجهَّز مسبقاً بالخلفية عند فتح الصفحة: فتح تطبيق واتساب على
+            // الجوال يجب أن يحدث فور الضغط، وإلا يمنعه المتصفح (خصوصاً Safari على iPhone).
+            let visitsReportCache = { date: null, text: null };
+
+            async function getVisitsReportText() {
+                const yesterday = computePresetRange('yesterday').from;
+                if (visitsReportCache.date === yesterday && visitsReportCache.text) return visitsReportCache.text;
+                const res = await fetch(`/api/tiktok-visits-report?date=${yesterday}`);
+                const json = await res.json();
+                if (json.status !== 'success') throw new Error(json.message || 'تعذر جلب التقرير');
+                visitsReportCache = { date: yesterday, text: buildVisitsReportText(json.report) };
+                return visitsReportCache.text;
+            }
+
+            function openWhatsappApp(text) {
+                window.location.href = `whatsapp://send?phone=${VISITS_REPORT_PHONE}&text=${encodeURIComponent(text)}`;
+                if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
+                showToast('جاري فتح واتساب - اضغط إرسال ✅');
+            }
+
+            async function sendVisitsReportWhatsappApp() {
+                const yesterday = computePresetRange('yesterday').from;
+                if (visitsReportCache.date === yesterday && visitsReportCache.text) {
+                    openWhatsappApp(visitsReportCache.text);
+                    return;
+                }
+                try {
+                    openWhatsappApp(await getVisitsReportText());
+                } catch (e) {
+                    showToast(e.message || 'تعذر تجهيز تقرير الزيارات');
+                }
+            }
+
             async function sendVisitsReportWhatsapp() {
                 // نفتح التبويب فوراً (قبل انتظار البيانات) حتى لا يحجبه المتصفح كنافذة منبثقة
                 const waTab = window.open('', 'elevenz_whatsapp');
-                const yesterday = computePresetRange('yesterday').from;
                 try {
-                    const res = await fetch(`/api/tiktok-visits-report?date=${yesterday}`);
-                    const json = await res.json();
-                    if (json.status !== 'success') throw new Error(json.message || 'تعذر جلب التقرير');
-                    const text = buildVisitsReportText(json.report);
+                    const text = await getVisitsReportText();
                     const url = `https://web.whatsapp.com/send?phone=${VISITS_REPORT_PHONE}&text=${encodeURIComponent(text)}`;
                     if (waTab) waTab.location.href = url; else window.open(url, 'elevenz_whatsapp');
                     // نسخة احتياطية في الحافظة لو احتاج المستخدم اللصق يدوياً
@@ -3785,6 +3817,7 @@ _تم إعداد هذا التقرير آلياً عبر منصة Elevenz_`;
             document.addEventListener('DOMContentLoaded', () => {
                 applyDatePreset('yesterday');
                 fetchDailyTrendData();
+                getVisitsReportText().catch(() => {});
             });
         </script>
     </body>
