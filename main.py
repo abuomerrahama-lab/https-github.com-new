@@ -718,6 +718,47 @@ async def get_dashboard_data(request: Request, date_from: str = None, date_to: s
         "range": {"date_from": date_from, "date_to": date_to}
     })
 
+# ===== تقرير واتساب اليومي لمجموعة "الزيارات" على TikTok =====
+# يُرسل يومياً بتقرير الأمس. الحقول أدناه مؤكدة عبر get_fields في Windsor.ai:
+# clicks = النقرات (الوجهة)، engagements = النقرات (الكل)، total_play = مشاهدات الفيديو.
+VISITS_ADGROUP_KEYWORD = "الزيارات"
+VISITS_REPORT_FIELDS = "date,ad_group_name,spend,impressions,clicks,engagements,total_play"
+
+
+@app.get("/api/tiktok-visits-report", dependencies=[Depends(verify_dashboard_auth)])
+@limiter.limit("15/minute")
+async def tiktok_visits_report(request: Request, date: str = None):
+    if not date or not _valid_iso_date(date):
+        return JSONResponse(content={"status": "error", "message": "صيغة التاريخ غير صحيحة (YYYY-MM-DD)"}, status_code=400)
+
+    rows = await fetch_windsor_connector("tiktok", {
+        "fields": VISITS_REPORT_FIELDS, "date_from": date, "date_to": date
+    })
+    rows = [r for r in rows if VISITS_ADGROUP_KEYWORD in str(r.get("ad_group_name") or "")]
+    if not rows:
+        return JSONResponse(content={"status": "error", "message": "لا توجد بيانات لمجموعة الزيارات في هذا التاريخ"}, status_code=404)
+
+    def total(key):
+        return sum(float(r.get(key) or 0) for r in rows)
+
+    spend, impressions, clicks = total("spend"), total("impressions"), total("clicks")
+    clicks_all, video_views = total("engagements"), total("total_play")
+    return JSONResponse(content={
+        "status": "success",
+        "date": date,
+        "report": {
+            "spend": spend,
+            "impressions": impressions,
+            "cpm": spend / impressions * 1000 if impressions else 0,
+            "clicks": clicks,
+            "cpc": spend / clicks if clicks else 0,
+            "clicks_all": clicks_all,
+            "ctr_all": clicks_all / impressions * 100 if impressions else 0,
+            "video_views": video_views,
+        },
+    })
+
+
 @app.get("/", response_class=HTMLResponse)
 @limiter.limit("30/minute")
 async def serve_index(request: Request):
@@ -1488,6 +1529,9 @@ async def serve_index(request: Request):
                     <button class="btn btn-copy" onclick="copyReportPlain()">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="3"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         نسخ
+                    </button>
+                    <button class="btn btn-copy" id="visits-report-btn" onclick="sendVisitsReportWhatsapp()" title="يفتح واتساب ويب على محادثة الزميلة ومعه تقرير أمس لمجموعة الزيارات على TikTok">
+                        📲 تقرير الزيارات
                     </button>
                     <button class="btn btn-copy" onclick="copyReportForAnalysis()">
                         🤖 نسخ للتحليل
@@ -3602,6 +3646,46 @@ _تم إعداد هذا التقرير آلياً عبر منصة Elevenz_`;
             // زر "نسخ للتحليل": نفس الأرقام بالضبط، لكن ضمن Prompt جاهز يوجّه أي
             // نموذج ذكاء اصطناعي (Claude/ChatGPT) لتحليلها وإعطاء توصيات فوراً
             // بمجرد اللصق - دون أن يحتاج المستخدم كتابة أي طلب إضافي بنفسه.
+            // ===== تقرير الزيارات اليومي على واتساب =====
+            // يجلب أرقام أمس لمجموعة "الزيارات" على TikTok ويفتح واتساب ويب على محادثة
+            // الزميلة مباشرة والرسالة جاهزة بنفس الصيغة المعتادة - يبقى فقط الضغط على إرسال.
+            const VISITS_REPORT_PHONE = '96876951719';
+
+            function buildVisitsReportText(r) {
+                const money = v => Number(v).toFixed(2) + ' SAR';
+                const int = v => Math.round(v).toLocaleString('en-US');
+                return [
+                    'إنفاق', money(r.spend),
+                    'مرّات الظهور', int(r.impressions),
+                    'التكلفة لكل ألف ظهور (CPM)', money(r.cpm),
+                    'النقرات (الوِجهة)', int(r.clicks),
+                    'التكلفة لكل نقرة (CPC) (الوِجهة)', money(r.cpc),
+                    'النقرات (الكل)', int(r.clicks_all),
+                    'نسبة النقر إلى الظهور (CTR) (الكل)', Number(r.ctr_all).toFixed(2) + '%',
+                    'مشاهدات الفيديو', int(r.video_views)
+                ].join(String.fromCharCode(10));
+            }
+
+            async function sendVisitsReportWhatsapp() {
+                // نفتح التبويب فوراً (قبل انتظار البيانات) حتى لا يحجبه المتصفح كنافذة منبثقة
+                const waTab = window.open('', 'elevenz_whatsapp');
+                const yesterday = computePresetRange('yesterday').from;
+                try {
+                    const res = await fetch(`/api/tiktok-visits-report?date=${yesterday}`);
+                    const json = await res.json();
+                    if (json.status !== 'success') throw new Error(json.message || 'تعذر جلب التقرير');
+                    const text = buildVisitsReportText(json.report);
+                    const url = `https://web.whatsapp.com/send?phone=${VISITS_REPORT_PHONE}&text=${encodeURIComponent(text)}`;
+                    if (waTab) waTab.location.href = url; else window.open(url, 'elevenz_whatsapp');
+                    // نسخة احتياطية في الحافظة لو احتاج المستخدم اللصق يدوياً
+                    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
+                    showToast('تم تجهيز تقرير الزيارات لأمس - اضغط إرسال في واتساب ✅');
+                } catch (e) {
+                    if (waTab) waTab.close();
+                    showToast(e.message || 'تعذر تجهيز تقرير الزيارات');
+                }
+            }
+
             function copyReportForAnalysis() {
                 if (!lastMetrics) return;
                 const p = previousMetrics;
