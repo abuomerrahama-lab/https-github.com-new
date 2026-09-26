@@ -1530,7 +1530,7 @@ async def serve_index(request: Request):
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="3"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         نسخ
                     </button>
-                    <button class="btn btn-copy" id="visits-report-btn" onclick="sendVisitsReportWhatsapp()" title="يفتح واتساب ويب على محادثة الزميلة ومعه تقرير أمس لمجموعة الزيارات على TikTok">
+                    <button class="btn btn-copy" id="visits-report-btn" onclick="sendVisitsReportWhatsapp()" title="يفتح واتساب ويب على محادثتك مع نفسك ومعه تقرير أمس لمجموعة الزيارات على TikTok">
                         📲 تقرير الزيارات
                     </button>
                     <button class="btn btn-copy" onclick="copyReportForAnalysis()">
@@ -3648,8 +3648,9 @@ _تم إعداد هذا التقرير آلياً عبر منصة Elevenz_`;
             // بمجرد اللصق - دون أن يحتاج المستخدم كتابة أي طلب إضافي بنفسه.
             // ===== تقرير الزيارات اليومي على واتساب =====
             // يجلب أرقام أمس لمجموعة "الزيارات" على TikTok ويفتح واتساب ويب على محادثة
-            // الزميلة مباشرة والرسالة جاهزة بنفس الصيغة المعتادة - يبقى فقط الضغط على إرسال.
-            const VISITS_REPORT_PHONE = '96876951719';
+            // المستخدم مع نفسه والرسالة جاهزة بالصيغة المعتادة - يرسلها لنفسه ثم يعيد
+            // توجيهها للزميلة من هناك.
+            const VISITS_REPORT_PHONE = '966556225251';
 
             function buildVisitsReportText(r) {
                 const money = v => Number(v).toFixed(2) + ' SAR';
