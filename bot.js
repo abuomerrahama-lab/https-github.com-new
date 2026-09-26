@@ -9,7 +9,7 @@ const port = process.env.PORT || 3000;
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: '/usr/bin/google-chrome-stable',
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -35,7 +35,7 @@ client.on('ready', () => {
         const myNumber = '966556225251@c.us'; // ضع رقمك هنا مع رمز الدولة بدون +
         const message = `🔔 *صباح الخير أبا بكر!*
 
-مباشرة لمراجعة أداء إعلاناتك اليوم عبر اللوحة:
+تفضّل مباشرة لمراجعة أداء إعلاناتك اليوم عبر اللوحة:
 https://https-github-com-new-6bbl.onrender.com
 
 📅 *جدول مهامك اليومية الموزعة:*
@@ -50,7 +50,7 @@ https://https-github-com-new-6bbl.onrender.com
 • 02:20 PM: إعداد تقارير الأداء وتدوين الملاحظات`;
 
         client.sendMessage(myNumber, message);
-    });
+    }, { timezone: 'Asia/Riyadh' });
 });
 
 client.initialize();
