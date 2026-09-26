@@ -17,6 +17,9 @@ import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ads-dashboard")
+# httpx يسجّل رابط كل طلب كاملاً بمستوى INFO، ورابط Windsor.ai يحمل api_key
+# كمعامل ظاهر - رفع مستواه لـ WARNING يمنع كشف المفتاح في سجلات Render.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ===== تحديد معدل الطلبات (اختياري بأمان) =====
 # slowapi مكتبة خارجية يجب إضافتها إلى requirements.txt على Render (راجع رسالة
