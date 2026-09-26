@@ -1458,7 +1458,8 @@ async def serve_index(request: Request):
                     position: sticky; top: 0; z-index: 500;
                     background: var(--sidebar-bg); padding: 14px 18px; gap: 12px;
                 }
-                .mobile-topbar-logo { color: #fff; font-size: 20px; font-weight: 800; }
+                .mobile-topbar-logo { color: #fff; font-size: 20px; font-weight: 800; display: flex; align-items: center; }
+                .mobile-topbar-logo img { height: 40px; width: auto; display: block; }
                 .mobile-topbar-logo span { color: var(--accent-orange); }
                 .hamburger-btn {
                     background: rgba(255,255,255,0.08); border: none; border-radius: 10px;
@@ -1552,7 +1553,7 @@ async def serve_index(request: Request):
             <button class="hamburger-btn" onclick="toggleSidebar()" aria-label="فتح القائمة">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
-            <a href="/" class="mobile-topbar-logo brand-home" onclick="goHome(event)" aria-label="الرجوع لأعلى الصفحة وتحديث البيانات">eleven<span>z</span></a>
+            <a href="/" class="mobile-topbar-logo brand-home" onclick="goHome(event)" aria-label="الرجوع لأعلى الصفحة وتحديث البيانات"><img id="mobile-logo-img" alt="Elevenz"></a>
             <span style="width:40px;"></span>
         </div>
         <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
@@ -1803,6 +1804,12 @@ async def serve_index(request: Request):
         <div id="toast"></div>
 
         <script>
+            (function () {
+                const src = document.querySelector('#brandLogo img');
+                const dst = document.getElementById('mobile-logo-img');
+                if (src && dst) dst.src = src.src;
+            })();
+
             Chart.register(ChartDataLabels);
             Chart.defaults.locale = 'en-US';
             Chart.defaults.font.family = 'Cairo';
