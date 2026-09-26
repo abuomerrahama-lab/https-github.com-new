@@ -1266,7 +1266,7 @@ async def serve_index(request: Request):
             .toolbar-btn svg { width: 14px; height: 14px; }
             .table-scroll { border-radius: 0 0 var(--radius-lg) var(--radius-lg); overflow-x: auto; overflow-y: hidden; }
             table { width: 100%; border-collapse: collapse; text-align: right; font-size: 13.5px; min-width: 900px; }
-            th, td { padding: 14px 18px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+            th, td { padding: 10px 16px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
             th {
                 color: var(--text-muted); font-weight: 700; background-color: var(--nested-deep); font-size: 12px;
                 position: sticky; top: 0; cursor: pointer; user-select: none;
@@ -1304,7 +1304,7 @@ async def serve_index(request: Request):
             .status-paused { color: var(--text-muted); }
 
             .metric-main { font-weight: 800; color: var(--text-dark); }
-            .metric-sub { font-size: 11px; color: var(--text-muted); font-weight: 500; margin-top: 2px; white-space: normal; max-width: 160px; }
+            .metric-sub { font-size: 11px; color: var(--text-muted); font-weight: 500; margin-top: 2px; white-space: nowrap; }
 
             .badge { padding: 3px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 800; display: inline-block; }
             .badge-good { background-color: var(--stage-green-bg); border: 1px solid var(--stage-green-border); color: var(--stage-green-text); }
